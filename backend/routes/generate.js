@@ -4,6 +4,7 @@ import { generatePost } from "../services/aiService.js";
 import Post from "../models/Post.js";
 import { postToInstagramBot } from "../services/instagramBot.js";
 import { postToFacebookBot } from "../services/facebookBot.js";
+import { normalizeTime } from "../scheduler/postScheduler.js";
 
 const router = express.Router();
 
@@ -15,6 +16,7 @@ router.get("/health", (_req, res) => {
     service: "ai-marketing-backend",
     mongo,
     mongoReady: mongoose.connection.readyState === 1,
+    scheduleTz: process.env.SCHEDULE_TZ || "Asia/Kolkata",
   });
 });
 
@@ -23,6 +25,7 @@ router.post("/generate", async (req, res) => {
     const form = req.body;
     const platforms = Array.isArray(form.platform) ? form.platform : [];
     const postsPerDay = Math.min(Math.max(Number(form.postsPerDay) || 1, 1), 3);
+    const scheduledTime = normalizeTime(form.scheduledTime || "");
 
     const result = await generatePost({ ...form, postsPerDay });
 
@@ -46,7 +49,7 @@ router.post("/generate", async (req, res) => {
           platform: platforms,
           posts: [result.text],
           images: result.images || [],
-          scheduledTime: form.scheduledTime,
+          scheduledTime,
           postsPerDay,
         });
         saved = true;
@@ -59,12 +62,14 @@ router.post("/generate", async (req, res) => {
       console.error("Post.save failed:", dbErr.message);
     }
 
+    // Only schedule via cron — do not post immediately when a time is set.
+    // (Immediate bots confused "Queued" with scheduled 10:35 posts.)
     const posting = {
       Instagram: platforms.includes("Instagram")
-        ? { success: true, queued: true }
+        ? { success: true, queued: true, mode: "scheduled" }
         : null,
       Facebook: platforms.includes("Facebook")
-        ? { success: true, queued: true }
+        ? { success: true, queued: true, mode: "scheduled" }
         : null,
     };
 
@@ -73,31 +78,14 @@ router.post("/generate", async (req, res) => {
       text: result.text,
       images: result.images || [],
       postsPerDay,
-      scheduledTime: form.scheduledTime || null,
+      scheduledTime: scheduledTime || null,
       platforms,
       posting,
       saved,
       saveError,
       message: saved
-        ? platforms.length
-          ? "Content generated. Social posting started in background on server."
-          : "Content generated and saved for schedule"
+        ? `Content saved. Will post at ${scheduledTime} (${process.env.SCHEDULE_TZ || "Asia/Kolkata"}) via scheduler.`
         : `Content generated, but not saved to DB: ${saveError || "MongoDB unavailable"}`,
-    });
-
-    setImmediate(async () => {
-      try {
-        if (platforms.includes("Instagram")) {
-          const ig = await postToInstagramBot(result.text, images);
-          console.log("Instagram result:", ig);
-        }
-        if (platforms.includes("Facebook")) {
-          const fb = await postToFacebookBot(result.text, images);
-          console.log("Facebook result:", fb);
-        }
-      } catch (err) {
-        console.error("Background post error:", err.message);
-      }
     });
   } catch (err) {
     console.error(err);

@@ -3,30 +3,63 @@ import Post from "../models/Post.js";
 import { postToInstagramBot } from "../services/instagramBot.js";
 import { postToFacebookBot } from "../services/facebookBot.js";
 
+/** Normalize "9:05", "09:05:00" -> "09:05" */
+export const normalizeTime = (value) => {
+  if (!value || typeof value !== "string") return "";
+  const parts = value.trim().split(":");
+  if (parts.length < 2) return "";
+  const h = String(Number(parts[0])).padStart(2, "0");
+  const m = String(Number(parts[1])).padStart(2, "0");
+  if (Number.isNaN(Number(h)) || Number.isNaN(Number(m))) return "";
+  return `${h}:${m}`;
+};
+
+const getNowParts = (timeZone) => {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+
+  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  // en-GB date is often dd/mm/yyyy via parts
+  const todayDate = `${map.year}-${map.month}-${map.day}`;
+  const currentTime = `${map.hour}:${map.minute}`;
+  return { todayDate, currentTime: normalizeTime(currentTime) };
+};
+
 export const startScheduler = () => {
+  const timeZone = process.env.SCHEDULE_TZ || "Asia/Kolkata";
+  console.log(`Scheduler using timezone: ${timeZone}`);
+
   cron.schedule("* * * * *", async () => {
     try {
-      const now = new Date();
-
-      const currentTime = now.toLocaleTimeString("en-GB", {
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-      });
-
-      const todayDate = now.toISOString().split("T")[0];
+      const { todayDate, currentTime } = getNowParts(timeZone);
+      console.log(`⏰ Scheduler tick ${todayDate} ${currentTime} (${timeZone})`);
 
       const posts = await Post.find({
-        scheduledTime: currentTime,
+        scheduledTime: { $exists: true, $ne: null, $ne: "" },
       });
 
       for (const post of posts) {
+        const scheduled = normalizeTime(post.scheduledTime);
+        if (!scheduled || scheduled !== currentTime) continue;
+
         if (post.lastPostedDate === todayDate) {
-          console.log("⏭️ Already posted today");
+          console.log("Already posted today:", post._id);
           continue;
         }
 
-        console.log("🔥 DAILY POST TRIGGERED");
+        console.log("DAILY POST TRIGGERED", {
+          id: post._id,
+          scheduled,
+          platforms: post.platform,
+          postsPerDay: post.postsPerDay,
+        });
 
         const images =
           Array.isArray(post.images) && post.images.length > 0
@@ -40,12 +73,8 @@ export const startScheduler = () => {
         const totalPosts = Math.min(Math.max(Number(post.postsPerDay) || 1, 1), 3);
         const platforms = Array.isArray(post.platform) ? post.platform : [];
 
-        console.log("🧠 Images:", images.length);
-        console.log("🧠 Posts/day:", totalPosts);
-        console.log("🧠 Platforms:", platforms);
-
         for (let i = 0; i < totalPosts; i++) {
-          console.log(`🚀 Posting ${i + 1}/${totalPosts}`);
+          console.log(`Posting ${i + 1}/${totalPosts}`);
 
           if (platforms.includes("Instagram")) {
             const ig = await postToInstagramBot(caption, images);
@@ -64,10 +93,12 @@ export const startScheduler = () => {
 
         post.lastPostedDate = todayDate;
         post.posted = true;
+        // keep normalized form in DB
+        post.scheduledTime = scheduled;
         await post.save();
       }
     } catch (err) {
-      console.log("❌ Scheduler Error:", err.message);
+      console.log("Scheduler Error:", err.message);
     }
   });
 };

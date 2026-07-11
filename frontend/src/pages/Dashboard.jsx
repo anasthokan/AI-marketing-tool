@@ -213,7 +213,9 @@ export default function Dashboard() {
                     <strong>{platform}:</strong>{" "}
                     {result.queued ? (
                       <span className="text-primary">
-                        Queued on server (posts in background)
+                        {result.mode === "scheduled"
+                          ? "Scheduled (cron will post at set time)"
+                          : "Queued on server (posts in background)"}
                       </span>
                     ) : result.success ? (
                       <span className="text-success">Posted</span>
