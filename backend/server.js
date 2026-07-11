@@ -12,10 +12,19 @@ app.use(cors());
 app.use(express.json());
 startScheduler();
 
-// MongoDB connect
-mongoose.connect(process.env.MONGO_URI)
-  .then(()=>console.log("MongoDB Connected"))
-  .catch(err=>console.log(err));
+// MongoDB connect (retry so late mongod start still works)
+const mongoUri = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/ai-marketing";
+mongoose
+  .connect(mongoUri)
+  .then(() => console.log("MongoDB Connected"))
+  .catch((err) => console.log("MongoDB initial connect failed:", err.message));
+
+mongoose.connection.on("disconnected", () => {
+  console.log("MongoDB disconnected");
+});
+mongoose.connection.on("reconnected", () => {
+  console.log("MongoDB reconnected");
+});
 
 app.use("/api", generateRoute);
 
