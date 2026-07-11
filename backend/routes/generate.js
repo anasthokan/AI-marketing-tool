@@ -2,8 +2,6 @@ import express from "express";
 import mongoose from "mongoose";
 import { generatePost } from "../services/aiService.js";
 import Post from "../models/Post.js";
-import { postToInstagramBot } from "../services/instagramBot.js";
-import { postToFacebookBot } from "../services/facebookBot.js";
 import { normalizeTime } from "../scheduler/postScheduler.js";
 
 const router = express.Router();
