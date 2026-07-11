@@ -26,7 +26,6 @@ const getNowParts = (timeZone) => {
   }).formatToParts(new Date());
 
   const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
-  // en-GB date is often dd/mm/yyyy via parts
   const todayDate = `${map.year}-${map.month}-${map.day}`;
   const currentTime = `${map.hour}:${map.minute}`;
   return { todayDate, currentTime: normalizeTime(currentTime) };
@@ -36,10 +35,18 @@ export const startScheduler = () => {
   const timeZone = process.env.SCHEDULE_TZ || "Asia/Kolkata";
   console.log(`Scheduler using timezone: ${timeZone}`);
 
+  let running = false;
+
   cron.schedule("* * * * *", async () => {
+    if (running) {
+      console.log("Scheduler still busy — skipping this minute");
+      return;
+    }
+    running = true;
+
     try {
       const { todayDate, currentTime } = getNowParts(timeZone);
-      console.log(`⏰ Scheduler tick ${todayDate} ${currentTime} (${timeZone})`);
+      console.log(`Scheduler tick ${todayDate} ${currentTime} (${timeZone})`);
 
       const posts = await Post.find({
         scheduledTime: { $exists: true, $ne: null, $ne: "" },
@@ -53,6 +60,11 @@ export const startScheduler = () => {
           console.log("Already posted today:", post._id);
           continue;
         }
+
+        // Claim immediately so next minute does not overlap
+        post.lastPostedDate = todayDate;
+        post.scheduledTime = scheduled;
+        await post.save();
 
         console.log("DAILY POST TRIGGERED", {
           id: post._id,
@@ -87,18 +99,17 @@ export const startScheduler = () => {
           }
 
           if (i < totalPosts - 1) {
-            await new Promise((res) => setTimeout(res, 20000));
+            await new Promise((res) => setTimeout(res, 15000));
           }
         }
 
-        post.lastPostedDate = todayDate;
         post.posted = true;
-        // keep normalized form in DB
-        post.scheduledTime = scheduled;
         await post.save();
       }
     } catch (err) {
       console.log("Scheduler Error:", err.message);
+    } finally {
+      running = false;
     }
   });
 };
