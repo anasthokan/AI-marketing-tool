@@ -1,7 +1,6 @@
 pipeline {
   agent any
 
-  // Localhost Jenkins: poll GitHub (webhook needs public URL)
   triggers {
     pollSCM('H/2 * * * *')
   }
@@ -10,12 +9,6 @@ pipeline {
     disableConcurrentBuilds()
     timestamps()
     timeout(time: 45, unit: 'MINUTES')
-  }
-
-  environment {
-    FRONTEND_DEST = 'C:\\inetpub\\wwwroot\\ai-marketing-frontend'
-    BACKEND_DEST  = 'C:\\inetpub\\wwwroot\\ai-marketing-backend'
-    API_URL       = 'http://74.208.184.175:5000'
   }
 
   stages {
@@ -27,19 +20,17 @@ pipeline {
 
     stage('Deploy') {
       steps {
-        bat '''
-          powershell -NoProfile -ExecutionPolicy Bypass -File deploy\\deploy.ps1 -FrontendDest "%FRONTEND_DEST%" -BackendDest "%BACKEND_DEST%" -ApiUrl "%API_URL%"
-        '''
+        bat 'powershell -NoProfile -ExecutionPolicy Bypass -File deploy\\jenkins-deploy.ps1'
       }
     }
   }
 
   post {
     success {
-      echo 'AI Marketing deploy succeeded — check http://74.208.184.175:521'
+      echo 'Deploy OK — refresh http://74.208.184.175:521 (Ctrl+F5)'
     }
     failure {
-      echo 'Deploy failed — open Console Output for errors'
+      echo 'FAILED — scroll UP in this Console Output for the real error line'
     }
   }
 }
