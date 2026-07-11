@@ -1,6 +1,4 @@
 # Deploy AI Marketing Platform on the Windows server (IIS + PM2).
-# Run from repo root on the server (or via Jenkins / GitHub Actions runner).
-
 param(
   [string]$FrontendDest = "C:\inetpub\wwwroot\ai-marketing-frontend",
   [string]$BackendDest = "C:\inetpub\wwwroot\ai-marketing-backend",
@@ -9,38 +7,59 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $PSScriptRoot
-if (-not (Test-Path (Join-Path $Root "frontend\package.json"))) {
-  $Root = Get-Location
+
+# Ensure npm/pm2 visible to GitHub Actions runner (non-interactive PATH)
+$env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+            [System.Environment]::GetEnvironmentVariable("Path", "User")
+
+function Assert-Command($name) {
+  $cmd = Get-Command $name -ErrorAction SilentlyContinue
+  if (-not $cmd) { throw "Command not found in PATH: $name" }
+  Write-Host "OK $name -> $($cmd.Source)"
 }
 
-Write-Host "==> Repo root: $Root" -ForegroundColor Cyan
+Assert-Command npm
+Assert-Command node
+
+$Root = $PSScriptRoot
+if ($Root) { $Root = Split-Path -Parent $Root }
+if (-not (Test-Path (Join-Path $Root "frontend\package.json"))) {
+  if ($env:GITHUB_WORKSPACE -and (Test-Path (Join-Path $env:GITHUB_WORKSPACE "frontend\package.json"))) {
+    $Root = $env:GITHUB_WORKSPACE
+  } else {
+    $Root = (Get-Location).Path
+  }
+}
+
+Write-Host "==> Repo root: $Root"
+Write-Host "==> Node: $(node -v)  npm: $(npm -v)"
 
 # ---- Frontend build ----
 $Frontend = Join-Path $Root "frontend"
-Push-Location $Frontend
-@"
-VITE_API_URL=$ApiUrl
-"@ | Set-Content -Path ".env.production" -Encoding UTF8
+Set-Location $Frontend
+"VITE_API_URL=$ApiUrl" | Set-Content -Path ".env.production" -Encoding ASCII
 
-npm ci
-if ($LASTEXITCODE -ne 0) { npm install }
+Write-Host "==> npm install (frontend)"
+npm install --no-fund --no-audit
+if ($LASTEXITCODE -ne 0) { throw "frontend npm install failed ($LASTEXITCODE)" }
+
+Write-Host "==> npm run build"
 npm run build
-if ($LASTEXITCODE -ne 0) { throw "Frontend build failed" }
-Pop-Location
+if ($LASTEXITCODE -ne 0) { throw "frontend build failed ($LASTEXITCODE)" }
 
 $Dist = Join-Path $Frontend "dist"
 if (-not (Test-Path (Join-Path $Dist "index.html"))) {
   throw "dist/index.html missing after build"
 }
 
-Write-Host "==> Deploy frontend -> $FrontendDest" -ForegroundColor Cyan
+Write-Host "==> Deploy frontend -> $FrontendDest"
 New-Item -ItemType Directory -Force -Path $FrontendDest | Out-Null
-Get-ChildItem $FrontendDest -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem $FrontendDest -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Copy-Item "$Dist\*" $FrontendDest -Recurse -Force
+Write-Host "Frontend deployed."
 
 # ---- Backend (keep server .env) ----
-Write-Host "==> Deploy backend -> $BackendDest" -ForegroundColor Cyan
+Write-Host "==> Deploy backend -> $BackendDest"
 New-Item -ItemType Directory -Force -Path $BackendDest | Out-Null
 
 $envBackup = Join-Path $env:TEMP "ai-marketing-backend.env.bak"
@@ -55,11 +74,11 @@ Get-ChildItem $BackendSrc -Force | Where-Object {
   -not ($_.PSIsContainer -and $exclude -contains $_.Name)
 } | ForEach-Object {
   $dest = Join-Path $BackendDest $_.Name
+  if ($_.Name -eq ".env") { return }
   if ($_.PSIsContainer) {
     if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
     Copy-Item $_.FullName $dest -Recurse -Force
   } else {
-    if ($_.Name -eq ".env") { return }
     Copy-Item $_.FullName $dest -Force
   }
 }
@@ -68,25 +87,31 @@ if (Test-Path $envBackup) {
   Copy-Item $envBackup $serverEnv -Force
   Remove-Item $envBackup -Force
 } elseif (-not (Test-Path $serverEnv)) {
-  Write-Host "WARNING: No .env on server. Create $serverEnv before starting." -ForegroundColor Yellow
+  Write-Host "WARNING: No .env on server at $serverEnv"
 }
 
-Push-Location $BackendDest
-npm ci
-if ($LASTEXITCODE -ne 0) { npm install }
-Pop-Location
+Set-Location $BackendDest
+Write-Host "==> npm install (backend)"
+npm install --no-fund --no-audit
+if ($LASTEXITCODE -ne 0) { throw "backend npm install failed ($LASTEXITCODE)" }
 
-Write-Host "==> Restart PM2: $Pm2AppName" -ForegroundColor Cyan
-pm2 describe $Pm2AppName 2>$null
-if ($LASTEXITCODE -eq 0) {
-  pm2 restart $Pm2AppName --update-env
+Write-Host "==> Restart PM2: $Pm2AppName"
+$pm2 = Get-Command pm2 -ErrorAction SilentlyContinue
+if (-not $pm2) {
+  Write-Host "WARNING: pm2 not in PATH — frontend is deployed; start backend manually."
 } else {
-  Push-Location $BackendDest
-  pm2 start server.js --name $Pm2AppName
-  Pop-Location
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  pm2 describe $Pm2AppName 2>$null | Out-Null
+  if ($LASTEXITCODE -eq 0) {
+    pm2 restart $Pm2AppName --update-env
+  } else {
+    pm2 start server.js --name $Pm2AppName
+  }
+  pm2 save
+  $ErrorActionPreference = $prev
 }
-pm2 save
 
-Write-Host "DONE" -ForegroundColor Green
-Write-Host "Frontend: IIS site folder updated"
+Write-Host "DONE"
+Write-Host "Frontend: $FrontendDest"
 Write-Host "Backend:  http://74.208.184.175:5000"

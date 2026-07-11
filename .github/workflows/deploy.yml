@@ -8,15 +8,27 @@ on:
 jobs:
   deploy:
     runs-on: self-hosted
+    timeout-minutes: 45
     defaults:
       run:
         shell: powershell
 
     steps:
+      - name: Check tools
+        run: |
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          Write-Host "PATH length:" $env:Path.Length
+          node -v
+          npm -v
+          git --version
+
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Deploy to IIS + PM2
         run: |
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
           Set-ExecutionPolicy Bypass -Scope Process -Force
+          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
           & "$env:GITHUB_WORKSPACE\deploy\deploy.ps1"
+          if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
