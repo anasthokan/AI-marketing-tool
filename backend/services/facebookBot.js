@@ -10,6 +10,13 @@ const SESSION_DIR = path.resolve(__dirname, "..", "facebook-session");
 const fbMutex = createMutex();
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
+const isHeaded = () => {
+  const v = String(process.env.PUPPETEER_HEADLESS ?? "true")
+    .trim()
+    .toLowerCase();
+  return v === "false" || v === "0" || v === "no";
+};
+
 const CREATE_POST_SELECTORS = [
   "[aria-label='Create a post']",
   "[aria-label='Create Post']",
@@ -58,7 +65,7 @@ const isLoginPage = async (page) => {
  * If not logged in and headed mode: keep Chrome open so user can login on RDP.
  */
 const ensureLoggedIn = async (page) => {
-  const headed = process.env.PUPPETEER_HEADLESS === "false";
+  const headed = isHeaded();
   const loggedInComposer = await findCreatePost(page, 5000);
   if (loggedInComposer) return loggedInComposer;
 
@@ -74,7 +81,7 @@ const ensureLoggedIn = async (page) => {
     );
   }
 
-  const waitMs = Number(process.env.FB_LOGIN_WAIT_MS || 300000); // 5 min
+  const waitMs = Number(process.env.FB_LOGIN_WAIT_MS || 600000); // 10 min
   console.log(
     `Facebook login required. Chrome will stay open for ${Math.round(
       waitMs / 1000
@@ -115,7 +122,7 @@ const postOnce = async (caption, imageInputs) => {
     }
 
     browser = await puppeteer.launch({
-      headless: process.env.PUPPETEER_HEADLESS !== "false",
+      headless: !isHeaded(),
       defaultViewport: { width: 1366, height: 768 },
       args: [
         "--no-sandbox",
