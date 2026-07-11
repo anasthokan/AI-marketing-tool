@@ -104,7 +104,7 @@ export default function Dashboard() {
   return (
     <div className="container py-5">
       <div className="card shadow-lg p-4 mx-auto" style={{ maxWidth: "700px" }}>
-        <h3 className="text-center mb-4">🚀 AI Marketing Tool</h3>
+        <h3 className="text-center mb-4">🚀 AI Marketing Tool SA</h3>
 
         <div className="row g-3">
           {Object.keys(form)
