@@ -1,9 +1,21 @@
 import puppeteer from "puppeteer";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import { saveImage } from "../utils/saveImage.js";
+import { createMutex } from "../utils/mutex.js";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SESSION_DIR = path.resolve(__dirname, "..", "instagram-session");
+const igMutex = createMutex();
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+
+const isHeaded = () => {
+  const v = String(process.env.PUPPETEER_HEADLESS ?? "true")
+    .trim()
+    .toLowerCase();
+  return v === "false" || v === "0" || v === "no";
+};
 
 
 // ================= ENABLE CAROUSEL =================
@@ -130,7 +142,10 @@ const clickShare = async (page) => {
 };
 
 // ================= MAIN BOT =================
-export const postToInstagramBot = async (caption, imageInputs) => {
+export const postToInstagramBot = (caption, imageInputs) =>
+  igMutex.run(() => postOnce(caption, imageInputs));
+
+const postOnce = async (caption, imageInputs) => {
   let browser = null;
   const imagePaths = [];
 
@@ -139,11 +154,18 @@ export const postToInstagramBot = async (caption, imageInputs) => {
       throw new Error("No images provided for Instagram");
     }
 
+    const lockFile = path.join(SESSION_DIR, "SingletonLock");
+    if (fs.existsSync(lockFile)) {
+      try {
+        fs.unlinkSync(lockFile);
+      } catch {}
+    }
+
     browser = await puppeteer.launch({
-      headless: process.env.PUPPETEER_HEADLESS !== "false",
+      headless: !isHeaded(),
       defaultViewport: null,
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--start-maximized"],
-      userDataDir: "./instagram-session",
+      userDataDir: SESSION_DIR,
     });
 
     const page = await browser.newPage();
