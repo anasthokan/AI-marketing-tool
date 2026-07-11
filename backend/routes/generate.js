@@ -1,4 +1,5 @@
 import express from "express";
+import mongoose from "mongoose";
 import { generatePost } from "../services/aiService.js";
 import Post from "../models/Post.js";
 import { postToInstagramBot } from "../services/instagramBot.js";
@@ -7,7 +8,14 @@ import { postToFacebookBot } from "../services/facebookBot.js";
 const router = express.Router();
 
 router.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "ai-marketing-backend" });
+  const mongoStates = ["disconnected", "connected", "connecting", "disconnecting"];
+  const mongo = mongoStates[mongoose.connection.readyState] || "unknown";
+  res.json({
+    ok: true,
+    service: "ai-marketing-backend",
+    mongo,
+    mongoReady: mongoose.connection.readyState === 1,
+  });
 });
 
 router.post("/generate", async (req, res) => {
@@ -25,18 +33,31 @@ router.post("/generate", async (req, res) => {
         ? result.images
         : [];
 
-    await Post.create({
-      company: form.company,
-      website: form.website,
-      industry: form.industry,
-      audience: form.audience,
-      country: form.country,
-      platform: platforms,
-      posts: [result.text],
-      images: result.images || [],
-      scheduledTime: form.scheduledTime,
-      postsPerDay,
-    });
+    let saved = false;
+    let saveError = null;
+    try {
+      if (mongoose.connection.readyState === 1) {
+        await Post.create({
+          company: form.company,
+          website: form.website,
+          industry: form.industry,
+          audience: form.audience,
+          country: form.country,
+          platform: platforms,
+          posts: [result.text],
+          images: result.images || [],
+          scheduledTime: form.scheduledTime,
+          postsPerDay,
+        });
+        saved = true;
+      } else {
+        saveError = "MongoDB not connected (is mongod running on 27017?)";
+        console.error(saveError);
+      }
+    } catch (dbErr) {
+      saveError = dbErr.message;
+      console.error("Post.save failed:", dbErr.message);
+    }
 
     const posting = {
       Instagram: platforms.includes("Instagram")
@@ -47,8 +68,6 @@ router.post("/generate", async (req, res) => {
         : null,
     };
 
-    // Respond immediately so mobile/other devices do not timeout
-    // while Puppeteer bots run (can take several minutes).
     res.json({
       success: true,
       text: result.text,
@@ -57,12 +76,15 @@ router.post("/generate", async (req, res) => {
       scheduledTime: form.scheduledTime || null,
       platforms,
       posting,
-      message: platforms.length
-        ? "Content generated. Social posting started in background on server."
-        : "Content generated and saved for schedule",
+      saved,
+      saveError,
+      message: saved
+        ? platforms.length
+          ? "Content generated. Social posting started in background on server."
+          : "Content generated and saved for schedule"
+        : `Content generated, but not saved to DB: ${saveError || "MongoDB unavailable"}`,
     });
 
-    // Fire-and-forget after response is sent
     setImmediate(async () => {
       try {
         if (platforms.includes("Instagram")) {
