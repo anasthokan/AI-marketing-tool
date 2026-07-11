@@ -55,7 +55,8 @@ export default function Dashboard() {
       setText("");
       setImages([]);
 
-      const apiBase = import.meta.env.VITE_API_URL || "http://localhost:5000";
+      // Empty VITE_API_URL => same origin (/api/...) so mobile only needs port 521
+      const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
       const res = await axios.post(
         `${apiBase}/api/generate`,
         form,
@@ -208,7 +209,11 @@ export default function Dashboard() {
                 {postingEntries.map(([platform, result]) => (
                   <li key={platform}>
                     <strong>{platform}:</strong>{" "}
-                    {result.success ? (
+                    {result.queued ? (
+                      <span className="text-primary">
+                        Queued on server (posts in background)
+                      </span>
+                    ) : result.success ? (
                       <span className="text-success">Posted</span>
                     ) : (
                       <span className="text-danger">

@@ -2,7 +2,7 @@
 param(
   [string]$FrontendDest = "C:\inetpub\wwwroot\ai-marketing-frontend",
   [string]$BackendDest = "C:\inetpub\wwwroot\ai-marketing-backend",
-  [string]$ApiUrl = "http://74.208.184.175:5000",
+  [string]$ApiUrl = "",
   [string]$Pm2AppName = "ai-marketing-backend"
 )
 
