@@ -8,7 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Ensure npm/pm2 visible to GitHub Actions runner (non-interactive PATH)
+# Ensure npm/pm2 visible to non-interactive Jenkins PATH
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
             [System.Environment]::GetEnvironmentVariable("Path", "User")
 
@@ -26,6 +26,8 @@ if ($Root) { $Root = Split-Path -Parent $Root }
 if (-not (Test-Path (Join-Path $Root "frontend\package.json"))) {
   if ($env:GITHUB_WORKSPACE -and (Test-Path (Join-Path $env:GITHUB_WORKSPACE "frontend\package.json"))) {
     $Root = $env:GITHUB_WORKSPACE
+  } elseif ($env:WORKSPACE -and (Test-Path (Join-Path $env:WORKSPACE "frontend\package.json"))) {
+    $Root = $env:WORKSPACE
   } else {
     $Root = (Get-Location).Path
   }
@@ -98,7 +100,7 @@ if ($LASTEXITCODE -ne 0) { throw "backend npm install failed ($LASTEXITCODE)" }
 Write-Host "==> Restart PM2: $Pm2AppName"
 $pm2 = Get-Command pm2 -ErrorAction SilentlyContinue
 if (-not $pm2) {
-  Write-Host "WARNING: pm2 not in PATH — frontend is deployed; start backend manually."
+  Write-Host "WARNING: pm2 not in PATH - frontend is deployed; start backend manually."
 } else {
   $prev = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
@@ -114,4 +116,4 @@ if (-not $pm2) {
 
 Write-Host "DONE"
 Write-Host "Frontend: $FrontendDest"
-Write-Host "Backend:  http://74.208.184.175:5000"
+Write-Host "Backend: http://74.208.184.175:5000"
