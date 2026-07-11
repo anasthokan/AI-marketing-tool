@@ -47,13 +47,58 @@ const findCreatePost = async (page, timeoutMs = 25000) => {
   return null;
 };
 
-const assertLoggedIn = async (page) => {
-  const loginForm = await page.$("input#email, input[name='email'], input[name='pass']");
-  if (loginForm) {
+const isLoginPage = async (page) => {
+  const loginForm = await page.$(
+    "input#email, input[name='email'], input[name='pass']"
+  );
+  return Boolean(loginForm);
+};
+
+/**
+ * If not logged in and headed mode: keep Chrome open so user can login on RDP.
+ */
+const ensureLoggedIn = async (page) => {
+  const headed = process.env.PUPPETEER_HEADLESS === "false";
+  const loggedInComposer = await findCreatePost(page, 5000);
+  if (loggedInComposer) return loggedInComposer;
+
+  const onLogin = await isLoginPage(page);
+  if (!onLogin) {
+    // Maybe slow load — wait a bit more for composer
+    return findCreatePost(page, 20000);
+  }
+
+  if (!headed) {
     throw new Error(
-      "Facebook not logged in on server. Set PUPPETEER_HEADLESS=false, restart PM2, login once in the opened Chrome, then set headless true again."
+      "Facebook not logged in. Set PUPPETEER_HEADLESS=false, restart PM2, schedule a post, login in the open Chrome window (it will wait), then set headless true again."
     );
   }
+
+  const waitMs = Number(process.env.FB_LOGIN_WAIT_MS || 300000); // 5 min
+  console.log(
+    `Facebook login required. Chrome will stay open for ${Math.round(
+      waitMs / 1000
+    )}s — login on RDP now...`
+  );
+
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    const btn = await findCreatePost(page, 3000);
+    if (btn) {
+      console.log("Facebook login detected — continuing post.");
+      return btn;
+    }
+    const stillLogin = await isLoginPage(page);
+    if (!stillLogin) {
+      const btn2 = await findCreatePost(page, 10000);
+      if (btn2) return btn2;
+    }
+    await delay(2000);
+  }
+
+  throw new Error(
+    "Timed out waiting for Facebook login on server (5 minutes)."
+  );
 };
 
 const postOnce = async (caption, imageInputs) => {
@@ -90,11 +135,9 @@ const postOnce = async (caption, imageInputs) => {
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
-    await delay(8000);
+    await delay(5000);
 
-    await assertLoggedIn(page);
-
-    const createBtn = await findCreatePost(page, 30000);
+    let createBtn = await ensureLoggedIn(page);
     if (!createBtn) {
       const shot = path.resolve(`fb_debug_${Date.now()}.png`);
       try {
@@ -102,7 +145,7 @@ const postOnce = async (caption, imageInputs) => {
         console.log("Debug screenshot:", shot);
       } catch {}
       throw new Error(
-        "Could not find Facebook 'Create a post' (not logged in, blocked UI, or FB layout change)."
+        "Could not find Facebook 'Create a post' after login wait."
       );
     }
 
