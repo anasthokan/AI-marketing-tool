@@ -55,8 +55,10 @@ export default function Dashboard() {
       setText("");
       setImages([]);
 
-      // Empty VITE_API_URL => same origin (/api/...) so mobile only needs port 521
-      const apiBase = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+      // Production: IIS backend site (e.g. :522). Dev: localhost:5000
+      const apiBase = (
+        import.meta.env.VITE_API_URL || "http://localhost:5000"
+      ).replace(/\/$/, "");
       const res = await axios.post(
         `${apiBase}/api/generate`,
         form,

@@ -2,7 +2,7 @@
 param(
   [string]$FrontendDest = "C:\inetpub\wwwroot\ai-marketing-frontend",
   [string]$BackendDest = "C:\inetpub\wwwroot\ai-marketing-backend",
-  [string]$ApiUrl = "",
+  [string]$ApiUrl = "http://74.208.184.175:522",
   [string]$Pm2AppName = "ai-marketing-backend"
 )
 
@@ -116,4 +116,17 @@ if (-not $pm2) {
 
 Write-Host "DONE"
 Write-Host "Frontend: $FrontendDest"
-Write-Host "Backend: http://74.208.184.175:5000"
+Write-Host "Backend PM2: http://127.0.0.1:5000"
+Write-Host "Backend IIS: http://74.208.184.175:522"
+
+# Ensure IIS backend site (reverse proxy) exists
+$setupIis = Join-Path $PSScriptRoot "setup-iis-backend.ps1"
+if (Test-Path $setupIis) {
+  Write-Host "==> Ensuring IIS backend site..."
+  try {
+    & $setupIis -PhysicalPath $BackendDest
+  } catch {
+    Write-Host "WARNING: IIS backend site setup failed: $($_.Exception.Message)"
+    Write-Host "Run manually as Admin: deploy\setup-iis-backend.ps1"
+  }
+}
