@@ -1,34 +1,13 @@
-name: Deploy AI Marketing
+# Disabled — using Jenkins for deploy instead of GitHub Actions.
+# Rename back to deploy.yml if you want Actions again.
+
+name: Deploy AI Marketing (disabled)
 
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch:
 
 jobs:
-  deploy:
-    runs-on: self-hosted
-    timeout-minutes: 45
-    defaults:
-      run:
-        shell: powershell
-
+  skipped:
+    runs-on: ubuntu-latest
     steps:
-      - name: Check tools
-        run: |
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-          Write-Host "PATH length:" $env:Path.Length
-          node -v
-          npm -v
-          git --version
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Deploy to IIS + PM2
-        run: |
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-          Set-ExecutionPolicy Bypass -Scope Process -Force
-          Write-Host "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE"
-          & "$env:GITHUB_WORKSPACE\deploy\deploy.ps1"
-          if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - run: echo "GitHub Actions deploy disabled. Use Jenkins pipeline."
