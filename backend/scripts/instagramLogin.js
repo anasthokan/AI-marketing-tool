@@ -27,35 +27,66 @@ const waitEnter = (msg) =>
     });
   });
 
-const isLoggedIn = async (page) => {
-  // Login form still visible?
-  const loginUser = await page.$(
-    'input[name="username"], input[aria-label="Phone number, username, or email"]'
-  );
-  const loginPass = await page.$('input[name="password"], input[aria-label="Password"]');
-  if (loginUser && loginPass) return false;
-
-  const markers = [
-    "svg[aria-label='New post']",
-    "svg[aria-label='Home']",
-    "svg[aria-label='Search']",
-    "svg[aria-label='Reels']",
-    "a[href='/']",
-  ];
-  for (const sel of markers) {
-    if (await page.$(sel)) return true;
-  }
-
-  // URL left login pages
-  const url = page.url();
-  if (
-    url.includes("/accounts/login") ||
-    url.includes("/accounts/emailsignup")
-  ) {
+const safeHas = async (page, selector) => {
+  try {
+    if (page.isClosed()) return false;
+    return Boolean(await page.$(selector));
+  } catch {
+    // Navigation mid-query is normal during Instagram login
     return false;
   }
+};
 
-  return false;
+const isLoggedIn = async (page) => {
+  try {
+    if (page.isClosed()) return false;
+
+    const url = page.url();
+    if (
+      url.includes("/accounts/login") ||
+      url.includes("/accounts/emailsignup") ||
+      url.includes("/challenge")
+    ) {
+      // Still on auth flow — unless home chrome already visible
+    }
+
+    const loginUser = await safeHas(
+      page,
+      'input[name="username"], input[aria-label="Phone number, username, or email"]'
+    );
+    const loginPass = await safeHas(
+      page,
+      'input[name="password"], input[aria-label="Password"]'
+    );
+    if (loginUser && loginPass) return false;
+
+    const markers = [
+      "svg[aria-label='New post']",
+      "svg[aria-label='Home']",
+      "svg[aria-label='Search']",
+      "svg[aria-label='Reels']",
+      "svg[aria-label='Messenger']",
+      "a[href='/direct/inbox/']",
+    ];
+    for (const sel of markers) {
+      if (await safeHas(page, sel)) return true;
+    }
+
+    // Logged-in home often has no /accounts/login in URL
+    if (
+      (url === "https://www.instagram.com/" ||
+        url.startsWith("https://www.instagram.com/?") ||
+        url.includes("instagram.com/#")) &&
+      !loginUser
+    ) {
+      // Weak signal — wait for a nav icon next loop
+      return false;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
 };
 
 const lock = path.join(SESSION_DIR, "SingletonLock");
@@ -67,6 +98,7 @@ if (fs.existsSync(lock)) {
 
 console.log("Session folder:", SESSION_DIR);
 console.log("Opening Chrome — login to Instagram, then come back here...");
+console.log("(Dots mean waiting. Ignore brief page reloads while you login.)");
 
 const browser = await puppeteer.launch({
   headless: false,
@@ -76,19 +108,34 @@ const browser = await puppeteer.launch({
 });
 
 const page = await browser.newPage();
-await page.goto("https://www.instagram.com/accounts/login/", {
-  waitUntil: "domcontentloaded",
-  timeout: 120000,
+
+// Don't crash the script when Instagram navigates during login
+page.setDefaultNavigationTimeout(120000);
+page.on("framenavigated", () => {
+  // no-op; just avoid unhandled noise
 });
+
+try {
+  await page.goto("https://www.instagram.com/accounts/login/", {
+    waitUntil: "domcontentloaded",
+    timeout: 120000,
+  });
+} catch (err) {
+  console.log("Initial navigation warning:", err.message);
+}
 
 const maxMs = 15 * 60 * 1000;
 const start = Date.now();
 let ok = false;
 
 while (Date.now() - start < maxMs) {
-  if (await isLoggedIn(page)) {
-    ok = true;
-    break;
+  try {
+    if (await isLoggedIn(page)) {
+      ok = true;
+      break;
+    }
+  } catch {
+    // keep waiting through navigations
   }
   process.stdout.write(".");
   await delay(3000);
@@ -98,14 +145,16 @@ console.log("");
 
 if (ok) {
   console.log("LOGIN OK — Instagram session saved.");
-  console.log("Press Enter to close Chrome...");
-  await waitEnter("");
 } else {
   console.log("Still not logged in after 15 minutes.");
-  console.log("Press Enter to close Chrome...");
-  await waitEnter("");
 }
 
-await browser.close();
+console.log("Press Enter to close Chrome...");
+await waitEnter("");
+
+try {
+  await browser.close();
+} catch {}
+
 console.log("Done. Keep PUPPETEER_HEADLESS=true for normal posting.");
 process.exit(ok ? 0 : 1);

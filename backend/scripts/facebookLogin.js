@@ -28,18 +28,39 @@ const waitEnter = (msg) =>
   });
 
 const isLoggedIn = async (page) => {
-  const login = await page.$("input#email, input[name='email'], input[name='pass']");
-  if (login) return false;
-  const markers = [
-    "[aria-label='Create a post']",
-    "[aria-label='Create Post']",
-    "[aria-label='Your profile']",
-    "[aria-label='Account']",
-  ];
-  for (const sel of markers) {
-    if (await page.$(sel)) return true;
+  try {
+    if (page.isClosed()) return false;
+
+    const safeHas = async (selector) => {
+      try {
+        return Boolean(await page.$(selector));
+      } catch {
+        return false;
+      }
+    };
+
+    if (
+      (await safeHas("input#email")) ||
+      (await safeHas("input[name='email']")) ||
+      (await safeHas("input[name='pass']"))
+    ) {
+      return false;
+    }
+
+    const markers = [
+      "[aria-label='Create a post']",
+      "[aria-label='Create Post']",
+      "[aria-label='Your profile']",
+      "[aria-label='Account']",
+      "[aria-label='Facebook']",
+    ];
+    for (const sel of markers) {
+      if (await safeHas(sel)) return true;
+    }
+    return false;
+  } catch {
+    return false;
   }
-  return false;
 };
 
 const lock = path.join(SESSION_DIR, "SingletonLock");
