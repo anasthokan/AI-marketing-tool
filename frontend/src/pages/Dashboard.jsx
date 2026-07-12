@@ -152,6 +152,7 @@ export default function Dashboard() {
               <div>Instagram</div>
             </div>
 
+            {/* LinkedIn temporarily disabled
             <div
               className={`p-3 border rounded text-center ${
                 form.platform.includes("LinkedIn") ? "bg-info text-white" : ""
@@ -162,6 +163,7 @@ export default function Dashboard() {
               <i className="bi bi-linkedin fs-3"></i>
               <div>LinkedIn</div>
             </div>
+            */}
           </div>
         </div>
 

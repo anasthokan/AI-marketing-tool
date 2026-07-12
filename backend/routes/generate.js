@@ -69,9 +69,9 @@ router.post("/generate", async (req, res) => {
       Facebook: platforms.includes("Facebook")
         ? { success: true, queued: true, mode: "scheduled" }
         : null,
-      LinkedIn: platforms.includes("LinkedIn")
-        ? { success: true, queued: true, mode: "scheduled" }
-        : null,
+      // LinkedIn: platforms.includes("LinkedIn")
+      //   ? { success: true, queued: true, mode: "scheduled" }
+      //   : null,
     };
 
     res.json({
