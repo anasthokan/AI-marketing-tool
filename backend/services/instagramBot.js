@@ -182,52 +182,100 @@ const clickCreate = async (page) => {
   throw new Error("❌ Create button not found (are you logged in?)");
 };
 
-// ================= CLICK BY LABEL =================
-const clickByExactText = async (page, labels, labelName) => {
+const hasCaptionBox = async (page) => {
+  try {
+    const el = await page.$("textarea, div[role='textbox']");
+    return Boolean(el);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Click a dialog control whose visible label matches one of `labels`.
+ * Prefers the clickable parent (button / role=button) over nested text nodes.
+ */
+const clickByExactText = async (page, labels, labelName, { required = true } = {}) => {
   const wanted = labels.map((l) => l.toLowerCase());
 
   for (let i = 0; i < 10; i++) {
     try {
-      const found = await page.evaluate((wantedLabels) => {
+      const clicked = await page.evaluate((wantedLabels) => {
         const dialog =
           document.querySelector("div[role='dialog']") || document.body;
-        const elements = Array.from(
-          dialog.querySelectorAll("button, div[role='button'], span, div")
+
+        const candidates = Array.from(
+          dialog.querySelectorAll("button, [role='button'], a, div, span")
         );
 
-        const el = elements.find((e) => {
-          const t = (e.innerText || "").trim().toLowerCase();
-          return wantedLabels.includes(t);
-        });
+        for (const el of candidates) {
+          const t = (el.innerText || "").trim().toLowerCase();
+          if (!wantedLabels.includes(t)) continue;
 
-        if (!el) return null;
-        const rect = el.getBoundingClientRect();
-        if (rect.width < 2 || rect.height < 2) return null;
-        return {
-          x: rect.left + rect.width / 2,
-          y: rect.top + rect.height / 2,
-        };
+          const clickable =
+            el.closest("button, [role='button'], a") || el;
+          const rect = clickable.getBoundingClientRect();
+          if (rect.width < 2 || rect.height < 2) continue;
+          if (window.getComputedStyle(clickable).visibility === "hidden") {
+            continue;
+          }
+
+          clickable.click();
+          return true;
+        }
+        return false;
       }, wanted);
 
-      if (found) {
-        await page.mouse.click(found.x, found.y);
+      if (clicked) {
         console.log(`✅ ${labelName} clicked`);
-        return;
+        return true;
       }
     } catch {}
 
     await delay(2000);
   }
 
+  if (!required) {
+    console.log(`⏭️ ${labelName} skipped (not on this step)`);
+    return false;
+  }
+
   await saveDebugShot(page, `no_${labelName.toLowerCase()}`);
   throw new Error(`❌ ${labelName} button not found`);
 };
 
-const clickNext = (page) => clickByExactText(page, ["next"], "Next");
+const clickNext = (page, opts) =>
+  clickByExactText(page, ["next", "ok", "continue"], "Next", opts);
 
 const clickShare = (page) =>
   clickByExactText(page, ["share", "post"], "Share");
 
+/**
+ * Instagram crop → filters → caption. Sometimes filters are skipped,
+ * so a hard-coded second Next fails. Advance until caption box appears.
+ */
+const advanceToCaption = async (page) => {
+  for (let step = 1; step <= 3; step++) {
+    if (await hasCaptionBox(page)) {
+      console.log(`✅ Caption screen ready (after ${step - 1} Next)`);
+      return;
+    }
+
+    const required = step === 1; // first Next must exist after upload
+    await clickNext(page, { required });
+    await delay(5000);
+
+    if (await hasCaptionBox(page)) {
+      console.log(`✅ Caption screen ready (after Next #${step})`);
+      return;
+    }
+  }
+
+  if (await hasCaptionBox(page)) return;
+
+  await saveDebugShot(page, "no_caption");
+  throw new Error("❌ Caption screen not reached after Next steps");
+};
 /** Confirm Instagram actually finished publishing (not just Share click). */
 const waitForPostShared = async (page) => {
   const phrases = [
@@ -338,11 +386,7 @@ const postOnce = async (caption, imageInputs) => {
 
     await delay(5000);
 
-    await clickNext(page);
-    await delay(4000);
-
-    await clickNext(page);
-    await delay(4000);
+    await advanceToCaption(page);
 
     await page.waitForSelector("textarea, div[role='textbox']", {
       timeout: 30000,
