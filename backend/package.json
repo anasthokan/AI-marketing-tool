@@ -8,7 +8,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
     "fb:login": "node scripts/facebookLogin.js",
-    "ig:login": "node scripts/instagramLogin.js"
+    "ig:login": "node scripts/instagramLogin.js",
+    "li:login": "node scripts/linkedinLogin.js"
   },
   "keywords": [],
   "author": "",

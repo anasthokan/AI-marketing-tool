@@ -129,7 +129,7 @@ export default function Dashboard() {
         <div className="mt-4">
           <label className="form-label fw-bold">Platforms</label>
 
-          <div className="d-flex gap-4">
+          <div className="d-flex gap-4 flex-wrap">
             <div
               className={`p-3 border rounded text-center ${
                 form.platform.includes("Facebook") ? "bg-primary text-white" : ""
@@ -150,6 +150,17 @@ export default function Dashboard() {
             >
               <i className="bi bi-instagram fs-3"></i>
               <div>Instagram</div>
+            </div>
+
+            <div
+              className={`p-3 border rounded text-center ${
+                form.platform.includes("LinkedIn") ? "bg-info text-white" : ""
+              }`}
+              style={{ cursor: "pointer", width: "120px" }}
+              onClick={() => handlePlatformChange("LinkedIn")}
+            >
+              <i className="bi bi-linkedin fs-3"></i>
+              <div>LinkedIn</div>
             </div>
           </div>
         </div>

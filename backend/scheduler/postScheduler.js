@@ -2,6 +2,7 @@ import cron from "node-cron";
 import Post from "../models/Post.js";
 import { postToInstagramBot } from "../services/instagramBot.js";
 import { postToFacebookBot } from "../services/facebookBot.js";
+import { postToLinkedInBot } from "../services/linkedinBot.js";
 
 /** Normalize "9:05", "09:05:00" -> "09:05" */
 export const normalizeTime = (value) => {
@@ -96,6 +97,11 @@ export const startScheduler = () => {
           if (platforms.includes("Facebook")) {
             const fb = await postToFacebookBot(caption, images);
             console.log("Facebook:", fb);
+          }
+
+          if (platforms.includes("LinkedIn")) {
+            const li = await postToLinkedInBot(caption, images);
+            console.log("LinkedIn:", li);
           }
 
           if (i < totalPosts - 1) {

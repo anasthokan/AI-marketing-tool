@@ -71,7 +71,7 @@ if (Test-Path $serverEnv) {
 }
 
 $BackendSrc = Join-Path $Root "backend"
-$exclude = @("node_modules", "facebook-session", "instagram-session", ".git")
+$exclude = @("node_modules", "facebook-session", "instagram-session", "linkedin-session", ".git")
 Get-ChildItem $BackendSrc -Force | Where-Object {
   -not ($_.PSIsContainer -and $exclude -contains $_.Name)
 } | ForEach-Object {
