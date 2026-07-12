@@ -182,28 +182,83 @@ const clickCreate = async (page) => {
   throw new Error("❌ Create button not found (are you logged in?)");
 };
 
-const hasCaptionBox = async (page) => {
-  try {
-    const el = await page.$("textarea, div[role='textbox']");
-    return Boolean(el);
-  } catch {
-    return false;
+const CAPTION_SELECTORS = [
+  'div[aria-label="Write a caption..."]',
+  'div[aria-label*="Write a caption"]',
+  'textarea[aria-label="Write a caption..."]',
+  'textarea[aria-label*="caption"]',
+  'div[aria-label*="caption" i]',
+  '[contenteditable="true"][role="textbox"]',
+  'div[role="textbox"][contenteditable="true"]',
+  "textarea",
+  'div[role="textbox"]',
+  '[contenteditable="true"]',
+];
+
+const findCaptionBox = async (page) => {
+  for (const sel of CAPTION_SELECTORS) {
+    try {
+      const el = await page.$(sel);
+      if (!el) continue;
+      const visible = await page.evaluate((node) => {
+        const r = node.getBoundingClientRect();
+        return r.width > 10 && r.height > 10;
+      }, el);
+      if (visible) return el;
+    } catch {}
   }
+  return null;
+};
+
+const hasCaptionBox = async (page) => Boolean(await findCaptionBox(page));
+
+const hasShareButton = async (page) => {
+  return page.evaluate(() => {
+    const dialog = document.querySelector("div[role='dialog']") || document.body;
+    const nodes = Array.from(
+      dialog.querySelectorAll("button, [role='button'], div, span")
+    );
+    return nodes.some((n) => {
+      const t = (n.innerText || "").trim().toLowerCase();
+      return t === "share" || t === "post";
+    });
+  });
+};
+
+const onCaptionScreen = async (page) =>
+  (await hasCaptionBox(page)) || (await hasShareButton(page));
+
+const logDialogStep = async (page) => {
+  try {
+    const info = await page.evaluate(() => {
+      const dialog = document.querySelector("div[role='dialog']");
+      if (!dialog) return "no-dialog";
+      const h = dialog.querySelector("h1, h2, [role='heading']");
+      return (h?.innerText || dialog.innerText || "").slice(0, 80).replace(/\s+/g, " ");
+    });
+    console.log("🧭 Dialog:", info);
+  } catch {}
 };
 
 /**
- * Click a dialog control whose visible label matches one of `labels`.
- * Prefers the clickable parent (button / role=button) over nested text nodes.
+ * Click dialog control by label using real mouse coords (Instagram ignores DOM .click()).
+ * Prefers the rightmost match in the dialog header area.
  */
-const clickByExactText = async (page, labels, labelName, { required = true } = {}) => {
+const clickByExactText = async (
+  page,
+  labels,
+  labelName,
+  { required = true } = {}
+) => {
   const wanted = labels.map((l) => l.toLowerCase());
 
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 12; i++) {
     try {
-      const clicked = await page.evaluate((wantedLabels) => {
+      const found = await page.evaluate((wantedLabels) => {
         const dialog =
           document.querySelector("div[role='dialog']") || document.body;
 
+        const matches = [];
         const candidates = Array.from(
           dialog.querySelectorAll("button, [role='button'], a, div, span")
         );
@@ -212,27 +267,36 @@ const clickByExactText = async (page, labels, labelName, { required = true } = {
           const t = (el.innerText || "").trim().toLowerCase();
           if (!wantedLabels.includes(t)) continue;
 
-          const clickable =
-            el.closest("button, [role='button'], a") || el;
+          const clickable = el.closest("button, [role='button'], a") || el;
           const rect = clickable.getBoundingClientRect();
+          const style = window.getComputedStyle(clickable);
           if (rect.width < 2 || rect.height < 2) continue;
-          if (window.getComputedStyle(clickable).visibility === "hidden") {
-            continue;
-          }
+          if (style.visibility === "hidden" || style.display === "none") continue;
+          if (Number(style.opacity) === 0) continue;
 
-          clickable.click();
-          return true;
+          matches.push({
+            x: rect.left + rect.width / 2,
+            y: rect.top + rect.height / 2,
+            right: rect.right,
+            top: rect.top,
+          });
         }
-        return false;
+
+        if (!matches.length) return null;
+
+        // Header Next/Share is usually top-right of the dialog
+        matches.sort((a, b) => b.right - a.right || a.top - b.top);
+        return matches[0];
       }, wanted);
 
-      if (clicked) {
+      if (found) {
+        await page.mouse.click(found.x, found.y, { delay: 50 });
         console.log(`✅ ${labelName} clicked`);
         return true;
       }
     } catch {}
 
-    await delay(2000);
+    await delay(1500);
   }
 
   if (!required) {
@@ -251,31 +315,36 @@ const clickShare = (page) =>
   clickByExactText(page, ["share", "post"], "Share");
 
 /**
- * Instagram crop → filters → caption. Sometimes filters are skipped,
- * so a hard-coded second Next fails. Advance until caption box appears.
+ * Instagram crop → filters → caption. Advance until caption/share UI appears.
  */
 const advanceToCaption = async (page) => {
-  for (let step = 1; step <= 3; step++) {
-    if (await hasCaptionBox(page)) {
-      console.log(`✅ Caption screen ready (after ${step - 1} Next)`);
+  await logDialogStep(page);
+
+  for (let step = 1; step <= 4; step++) {
+    if (await onCaptionScreen(page)) {
+      console.log(`✅ Caption screen ready (before Next #${step})`);
       return;
     }
 
-    const required = step === 1; // first Next must exist after upload
-    await clickNext(page, { required });
-    await delay(5000);
+    const required = step <= 2;
+    const clicked = await clickNext(page, { required });
+    await delay(6000);
+    await logDialogStep(page);
 
-    if (await hasCaptionBox(page)) {
+    if (await onCaptionScreen(page)) {
       console.log(`✅ Caption screen ready (after Next #${step})`);
       return;
     }
+
+    if (!clicked && step > 2) break;
   }
 
-  if (await hasCaptionBox(page)) return;
+  if (await onCaptionScreen(page)) return;
 
   await saveDebugShot(page, "no_caption");
   throw new Error("❌ Caption screen not reached after Next steps");
 };
+
 /** Confirm Instagram actually finished publishing (not just Share click). */
 const waitForPostShared = async (page) => {
   const phrases = [
@@ -386,16 +455,27 @@ const postOnce = async (caption, imageInputs) => {
 
     await delay(5000);
 
+    // Wait until crop/Next UI is ready after upload
+    await page.waitForFunction(
+      () => {
+        const dialog = document.querySelector("div[role='dialog']");
+        if (!dialog) return false;
+        const text = (dialog.innerText || "").toLowerCase();
+        return text.includes("next") || text.includes("crop");
+      },
+      { timeout: 30000 }
+    ).catch(() => {});
+
     await advanceToCaption(page);
 
-    await page.waitForSelector("textarea, div[role='textbox']", {
-      timeout: 30000,
-    });
+    const box = await findCaptionBox(page);
+    if (!box) {
+      await saveDebugShot(page, "caption_missing");
+      throw new Error("Caption box not found on caption screen");
+    }
 
-    const box =
-      (await page.$("textarea")) || (await page.$("div[role='textbox']"));
-
-    await box.click();
+    await box.click({ clickCount: 1 });
+    await delay(500);
     await page.keyboard.type(caption, { delay: 20 });
     console.log("✅ Caption added");
 
