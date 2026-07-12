@@ -17,6 +17,100 @@ const isHeaded = () => {
   return v === "false" || v === "0" || v === "no";
 };
 
+const safeHas = async (page, selector) => {
+  try {
+    if (page.isClosed()) return false;
+    return Boolean(await page.$(selector));
+  } catch {
+    return false;
+  }
+};
+
+const isLoginPage = async (page) => {
+  const url = page.url();
+  if (
+    url.includes("/accounts/login") ||
+    url.includes("/accounts/emailsignup") ||
+    url.includes("/challenge")
+  ) {
+    return true;
+  }
+
+  const loginUser = await safeHas(
+    page,
+    'input[name="username"], input[aria-label="Phone number, username, or email"]'
+  );
+  const loginPass = await safeHas(
+    page,
+    'input[name="password"], input[aria-label="Password"]'
+  );
+  return Boolean(loginUser && loginPass);
+};
+
+const isLoggedIn = async (page) => {
+  if (await isLoginPage(page)) return false;
+
+  const markers = [
+    "svg[aria-label='New post']",
+    "svg[aria-label='New Post']",
+    "svg[aria-label='Home']",
+    "svg[aria-label='Search']",
+    "svg[aria-label='Reels']",
+    "svg[aria-label='Messenger']",
+    "a[href='/direct/inbox/']",
+  ];
+  for (const sel of markers) {
+    if (await safeHas(page, sel)) return true;
+  }
+  return false;
+};
+
+/**
+ * If not logged in and headed mode: keep Chrome open so user can login on RDP.
+ */
+const ensureLoggedIn = async (page) => {
+  if (await isLoggedIn(page)) return true;
+
+  const onLogin = await isLoginPage(page);
+  if (!onLogin) {
+    await delay(5000);
+    if (await isLoggedIn(page)) return true;
+  }
+
+  if (!isHeaded()) {
+    throw new Error(
+      "Instagram not logged in. On the server RDP: set PUPPETEER_HEADLESS=false, restart PM2, schedule a post, login in the open Chrome window — or run: npm run ig:login"
+    );
+  }
+
+  const waitMs = Number(process.env.IG_LOGIN_WAIT_MS || 600000); // 10 min
+  console.log(
+    `Instagram login required. Chrome will stay open for ${Math.round(
+      waitMs / 1000
+    )}s — login on RDP now...`
+  );
+
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    if (await isLoggedIn(page)) {
+      console.log("Instagram login detected — continuing post.");
+      return true;
+    }
+    await delay(3000);
+  }
+
+  throw new Error(
+    "Timed out waiting for Instagram login on server. Run: npm run ig:login"
+  );
+};
+
+const saveDebugShot = async (page, label) => {
+  try {
+    const shot = path.resolve(`ig_debug_${label}_${Date.now()}.png`);
+    await page.screenshot({ path: shot, fullPage: true });
+    console.log("Debug screenshot:", shot);
+  } catch {}
+};
 
 // ================= ENABLE CAROUSEL =================
 const enableCarousel = async (page) => {
@@ -25,16 +119,13 @@ const enableCarousel = async (page) => {
 
     const clicked = await page.evaluate(() => {
       const btns = Array.from(document.querySelectorAll("button"));
-
       const target = btns.find((b) =>
         b.innerText?.toLowerCase().includes("select multiple")
       );
-
       if (target) {
         target.click();
         return true;
       }
-
       return false;
     });
 
@@ -50,51 +141,77 @@ const enableCarousel = async (page) => {
 
 // ================= CLICK CREATE =================
 const clickCreate = async (page) => {
-  for (let i = 0; i < 5; i++) {
-    try {
-      const btn = await page.waitForSelector("svg[aria-label='New post']", {
-        timeout: 5000,
-      });
+  const selectors = [
+    "svg[aria-label='New post']",
+    "svg[aria-label='New Post']",
+    "svg[aria-label='Create']",
+  ];
 
-      await btn.click();
-      console.log("✅ Create clicked");
+  for (let i = 0; i < 8; i++) {
+    for (const sel of selectors) {
+      try {
+        const btn = await page.$(sel);
+        if (btn) {
+          await btn.click();
+          console.log("✅ Create clicked");
+          return;
+        }
+      } catch {}
+    }
+
+    // Fallback: sidebar Create / New post text
+    const clicked = await page.evaluate(() => {
+      const nodes = Array.from(document.querySelectorAll("a, div, span"));
+      const el = nodes.find((n) => {
+        const t = (n.innerText || "").trim().toLowerCase();
+        return t === "create" || t === "new post";
+      });
+      if (!el) return false;
+      el.click();
+      return true;
+    });
+    if (clicked) {
+      console.log("✅ Create clicked (fallback)");
       return;
-    } catch {}
+    }
 
     await delay(2000);
   }
 
-  throw new Error("❌ Create button not found");
+  await saveDebugShot(page, "no_create");
+  throw new Error("❌ Create button not found (are you logged in?)");
 };
 
-// ================= CLICK NEXT =================
-const clickNext = async (page) => {
+// ================= CLICK BY LABEL =================
+const clickByExactText = async (page, labels, labelName) => {
+  const wanted = labels.map((l) => l.toLowerCase());
+
   for (let i = 0; i < 10; i++) {
     try {
-      const found = await page.evaluate(() => {
-        const elements = Array.from(document.querySelectorAll("*"));
-
-        const el = elements.find(
-          (e) =>
-            e.innerText &&
-            e.innerText.trim().toLowerCase() === "next"
+      const found = await page.evaluate((wantedLabels) => {
+        const dialog =
+          document.querySelector("div[role='dialog']") || document.body;
+        const elements = Array.from(
+          dialog.querySelectorAll("button, div[role='button'], span, div")
         );
 
-        if (el) {
-          const rect = el.getBoundingClientRect();
+        const el = elements.find((e) => {
+          const t = (e.innerText || "").trim().toLowerCase();
+          return wantedLabels.includes(t);
+        });
 
-          return {
-            x: rect.left + rect.width / 2,
-            y: rect.top + rect.height / 2,
-          };
-        }
-
-        return null;
-      });
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) return null;
+        return {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+        };
+      }, wanted);
 
       if (found) {
         await page.mouse.click(found.x, found.y);
-        console.log("✅ Next clicked");
+        console.log(`✅ ${labelName} clicked`);
         return;
       }
     } catch {}
@@ -102,43 +219,40 @@ const clickNext = async (page) => {
     await delay(2000);
   }
 
-  throw new Error("❌ Next button not found");
+  await saveDebugShot(page, `no_${labelName.toLowerCase()}`);
+  throw new Error(`❌ ${labelName} button not found`);
 };
 
-// ================= CLICK SHARE =================
-const clickShare = async (page) => {
-  for (let i = 0; i < 10; i++) {
-    const found = await page.evaluate(() => {
-      const elements = Array.from(document.querySelectorAll("*"));
+const clickNext = (page) => clickByExactText(page, ["next"], "Next");
 
-      const el = elements.find(
-        (e) =>
-          e.innerText &&
-          e.innerText.trim().toLowerCase() === "share"
-      );
+const clickShare = (page) =>
+  clickByExactText(page, ["share", "post"], "Share");
 
-      if (el) {
-        const rect = el.getBoundingClientRect();
+/** Confirm Instagram actually finished publishing (not just Share click). */
+const waitForPostShared = async (page) => {
+  const phrases = [
+    "your post has been shared",
+    "post shared",
+    "reel shared",
+    "your reel has been shared",
+  ];
 
-        return {
-          x: rect.left + rect.width / 2,
-          y: rect.top + rect.height / 2,
-        };
-      }
+  const deadline = Date.now() + 90000;
+  while (Date.now() < deadline) {
+    const ok = await page.evaluate((list) => {
+      const text = (document.body?.innerText || "").toLowerCase();
+      return list.some((p) => text.includes(p));
+    }, phrases);
 
-      return null;
-    });
-
-    if (found) {
-      await page.mouse.click(found.x, found.y);
-      console.log("🚀 POSTED SUCCESSFULLY");
-      return;
+    if (ok) {
+      console.log("🚀 POST CONFIRMED — Instagram shared successfully");
+      return true;
     }
-
     await delay(2000);
   }
 
-  throw new Error("❌ Share button not found");
+  await saveDebugShot(page, "no_share_confirm");
+  return false;
 };
 
 // ================= MAIN BOT =================
@@ -163,18 +277,28 @@ const postOnce = async (caption, imageInputs) => {
 
     browser = await puppeteer.launch({
       headless: !isHeaded(),
-      defaultViewport: null,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--start-maximized"],
+      defaultViewport: { width: 1366, height: 768 },
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--window-size=1366,768",
+      ],
       userDataDir: SESSION_DIR,
     });
 
     const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    );
 
     await page.goto("https://www.instagram.com/", {
-      waitUntil: "networkidle2",
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
     });
+    await delay(5000);
 
-    await delay(8000);
+    await ensureLoggedIn(page);
 
     const images = Array.isArray(imageInputs)
       ? imageInputs.slice(0, 10)
@@ -234,9 +358,14 @@ const postOnce = async (caption, imageInputs) => {
     await delay(3000);
     await clickShare(page);
 
-    console.log("⏳ Waiting before closing...");
-    await delay(15000);
+    const confirmed = await waitForPostShared(page);
+    if (!confirmed) {
+      throw new Error(
+        "Share was clicked but Instagram did not confirm the post. Session may be expired — run npm run ig:login on the server."
+      );
+    }
 
+    await delay(3000);
     return { success: true };
   } catch (err) {
     console.log("❌ FINAL ERROR:", err.message);
@@ -252,5 +381,6 @@ const postOnce = async (caption, imageInputs) => {
         await browser.close();
       } catch {}
     }
+    await delay(3000);
   }
 };
