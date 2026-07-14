@@ -27,7 +27,7 @@ pipeline {
 
   post {
     success {
-      echo 'Deploy OK — refresh http://74.208.184.175:521 (Ctrl+F5)'
+      echo 'Deploy OK — refresh https://marketingtool.atozeesolutions.com (Ctrl+F5)'
     }
     failure {
       echo 'FAILED — scroll UP in this Console Output for the real error line'

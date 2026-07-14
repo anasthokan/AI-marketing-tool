@@ -55,9 +55,14 @@ export default function Dashboard() {
       setText("");
       setImages([]);
 
-      // Production: IIS backend site (e.g. :522). Dev: localhost:5000
+      // Prod: same-origin /api (IIS proxies to PM2 :5000). Dev: localhost:5000
+      const configured = import.meta.env.VITE_API_URL;
       const apiBase = (
-        import.meta.env.VITE_API_URL || "http://localhost:5000"
+        configured != null && String(configured).trim() !== ""
+          ? String(configured)
+          : import.meta.env.PROD
+            ? ""
+            : "http://localhost:5000"
       ).replace(/\/$/, "");
       const res = await axios.post(
         `${apiBase}/api/generate`,
