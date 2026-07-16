@@ -18,8 +18,26 @@ export default function Dashboard() {
 
   const [text, setText] = useState("");
   const [images, setImages] = useState([]);
+  const [cta, setCta] = useState(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState(null);
+
+  const buildCtaFromForm = () => {
+    const website = form.website?.trim()
+      ? form.website.match(/^https?:\/\//i)
+        ? form.website.trim()
+        : `https://${form.website.trim()}`
+      : null;
+    const inquiryRaw = (form.inquiryUrl || form.website || "").trim();
+    const inquiry = inquiryRaw
+      ? inquiryRaw.match(/^https?:\/\//i)
+        ? inquiryRaw
+        : `https://${inquiryRaw}`
+      : website;
+    const digits = String(form.whatsapp || "").replace(/\D/g, "");
+    const whatsapp = digits ? `https://wa.me/${digits}` : null;
+    return { website, inquiry, whatsapp };
+  };
 
   const handlePlatformChange = (value) => {
     if (form.platform.includes(value)) {
@@ -56,6 +74,7 @@ export default function Dashboard() {
       setStatus(null);
       setText("");
       setImages([]);
+      setCta(null);
 
       // Prod: same-origin /api (IIS proxies to PM2 :5000). Dev: localhost:5000
       const configured = import.meta.env.VITE_API_URL;
@@ -73,6 +92,7 @@ export default function Dashboard() {
       );
 
       setText(res.data.text || "");
+      setCta(res.data.cta || buildCtaFromForm());
 
       if (Array.isArray(res.data.images)) {
         setImages(res.data.images);
@@ -303,7 +323,47 @@ export default function Dashboard() {
         {text && (
           <div className="mt-4">
             <h5>📝 Generated Post</h5>
-            <div className="bg-light p-3 rounded">{text}</div>
+            <div
+              className="bg-light p-3 rounded"
+              style={{ whiteSpace: "pre-wrap" }}
+            >
+              {text}
+            </div>
+          </div>
+        )}
+
+        {(cta?.website || cta?.inquiry || cta?.whatsapp) && (
+          <div className="d-flex flex-wrap gap-2 mt-3">
+            {cta.website && (
+              <a
+                href={cta.website}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn btn-primary"
+              >
+                Website
+              </a>
+            )}
+            {cta.inquiry && (
+              <a
+                href={cta.inquiry}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn btn-warning text-white"
+              >
+                Raise Inquiry
+              </a>
+            )}
+            {cta.whatsapp && (
+              <a
+                href={cta.whatsapp}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn btn-success"
+              >
+                WhatsApp
+              </a>
+            )}
           </div>
         )}
 

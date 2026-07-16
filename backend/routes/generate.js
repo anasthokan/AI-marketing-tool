@@ -83,6 +83,7 @@ router.post("/generate", async (req, res) => {
       success: true,
       text: result.text,
       images: result.images || [],
+      cta: result.cta || null,
       postsPerDay,
       scheduledTime: scheduledTime || null,
       platforms,

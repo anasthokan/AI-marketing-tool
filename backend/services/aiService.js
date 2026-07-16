@@ -2,6 +2,7 @@ import axios from "axios";
 import dotenv from "dotenv";
 import { InferenceClient } from "@huggingface/inference";
 import { addCtaButtonsToAll } from "../utils/imageOverlay.js";
+import { appendCtaToCaption, buildCtaLinks } from "../utils/ctaLinks.js";
 
 dotenv.config();
 
@@ -186,14 +187,17 @@ const generateImages = async (data) => {
 
 // ================= MAIN FUNCTION =================
 export const generatePost = async (data) => {
-  const text = await generateText(data);
-  let images = await generateImages(data);
+  const rawText = await generateText(data);
+  // Caption gets real clickable links (FB/IG image buttons cannot be clicked)
+  const text = appendCtaToCaption(rawText, data);
+  const cta = buildCtaLinks(data);
 
+  let images = await generateImages(data);
   images = await addCtaButtonsToAll(images, {
     website: data.website,
     inquiryUrl: data.inquiryUrl || data.website,
     whatsapp: data.whatsapp,
   });
 
-  return { text, images };
+  return { text, images, cta };
 };
