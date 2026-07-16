@@ -58,7 +58,20 @@ const withTimeout = (promise, ms, label) =>
   ]);
 
 const buildImagePrompt = (data, variation = 1) =>
-  `Professional marketing banner for ${data.company}, ${data.industry} industry, high quality, clean modern design, vibrant colors, no text, variation ${variation}`;
+  [
+    `Professional marketing photo for ${data.company || "brand"}`,
+    `${data.industry || "business"} industry`,
+    "clean modern product lifestyle scene",
+    "high quality photography",
+    "absolutely no text",
+    "no letters",
+    "no words",
+    "no logos",
+    "no buttons",
+    "no UI",
+    "no watermarks",
+    `variation ${variation}`,
+  ].join(", ");
 
 /** Free AI images — no Hugging Face billing required */
 const generatePollinationsImage = async (prompt, seed) => {
@@ -187,10 +200,10 @@ const generateImages = async (data) => {
 // ================= MAIN FUNCTION =================
 export const generatePost = async (data) => {
   const rawText = await generateText(data);
-  // Caption gets real clickable links (FB/IG cannot click image buttons)
   const text = appendCtaToCaption(rawText, data);
   const cta = buildCtaLinks(data);
-  const images = await generateImages(data);
+  console.log("CTA links for caption:", cta);
 
+  const images = await generateImages(data);
   return { text, images, cta };
 };
