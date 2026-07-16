@@ -8,6 +8,9 @@ dotenv.config();
 const skipHfImages = () =>
   String(process.env.SKIP_HF_IMAGES || "").toLowerCase() === "true";
 
+const imageSource = () =>
+  String(process.env.IMAGE_SOURCE || "auto").trim().toLowerCase();
+
 // ================= TEXT GENERATION (LLAMA3 LOCAL) =================
 const generateText = async (data) => {
   try {
@@ -31,7 +34,6 @@ const generateText = async (data) => {
 const hfToken = (process.env.HF_TOKEN || "").trim();
 const hf = hfToken ? new InferenceClient(hfToken) : null;
 
-/** Model that supports text-to-image on multiple HF providers */
 const imageModel =
   process.env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell";
 
@@ -43,6 +45,9 @@ const imageProviders = () => {
 };
 
 const HF_IMAGE_TIMEOUT_MS = Number(process.env.HF_IMAGE_TIMEOUT_MS || 90000);
+const POLLINATIONS_TIMEOUT_MS = Number(
+  process.env.POLLINATIONS_TIMEOUT_MS || 120000
+);
 
 const withTimeout = (promise, ms, label) =>
   Promise.race([
@@ -52,23 +57,58 @@ const withTimeout = (promise, ms, label) =>
     ),
   ]);
 
-const generateMockImages = (data, reason) => {
+const buildImagePrompt = (data, variation = 1) =>
+  `Professional marketing banner for ${data.company}, ${data.industry} industry, high quality, clean modern design, vibrant colors, no text, variation ${variation}`;
+
+/** Free AI images — no Hugging Face billing required */
+const generatePollinationsImage = async (prompt, seed) => {
+  const encoded = encodeURIComponent(prompt);
+  const url = `https://image.pollinations.ai/prompt/${encoded}?width=1024&height=768&nologo=true&seed=${seed}`;
+
+  console.log("🎨 Pollinations (free) image generation...");
+  const res = await axios.get(url, {
+    responseType: "arraybuffer",
+    timeout: POLLINATIONS_TIMEOUT_MS,
+    headers: { "User-Agent": "Mozilla/5.0" },
+    validateStatus: (status) => status < 400,
+  });
+
+  if (!res.data || res.data.length < 1000) {
+    throw new Error("Empty Pollinations image response");
+  }
+
+  const mime = String(res.headers["content-type"] || "image/jpeg").split(";")[0];
+  const base64 = Buffer.from(res.data).toString("base64");
+  console.log("✅ Pollinations IMAGE OK");
+  return `data:${mime};base64,${base64}`;
+};
+
+const picsumFallback = (i) =>
+  `https://picsum.photos/600/400?random=${Date.now()}_${i}`;
+
+const generateFreeImages = async (data, reason) => {
   const count = Number(data.postsPerDay) || 1;
   const images = [];
 
   for (let i = 0; i < count; i++) {
-    images.push(
-      `https://picsum.photos/seed/${encodeURIComponent(
-        `${data.company || "brand"}-${data.industry || "marketing"}-${i}`
-      )}/600/400`
-    );
+    try {
+      images.push(
+        await generatePollinationsImage(
+          buildImagePrompt(data, i + 1),
+          Date.now() + i
+        )
+      );
+    } catch (err) {
+      console.log("⚠️ Pollinations failed, Picsum fallback:", err.message);
+      images.push(picsumFallback(i));
+    }
   }
 
-  console.log(`🧪 Using Picsum placeholders — ${reason}`);
+  console.log(`🆓 Free AI images via Pollinations — ${reason}`);
   return images;
 };
 
-const generateOneImage = async (prompt) => {
+const generateOneHfImage = async (prompt) => {
   let lastError = null;
   const providers = imageProviders().slice(0, 3);
 
@@ -99,31 +139,45 @@ const generateOneImage = async (prompt) => {
 };
 
 const generateImages = async (data) => {
-  if (skipHfImages()) {
-    return generateMockImages(data, "SKIP_HF_IMAGES=true");
-  }
+  const source = imageSource();
 
-  if (!hf) {
-    return generateMockImages(
+  if (source === "pollinations" || skipHfImages()) {
+    return generateFreeImages(
       data,
-      "HF_TOKEN missing — set a fine-grained token with Inference Providers permission"
+      skipHfImages() ? "SKIP_HF_IMAGES=true" : "IMAGE_SOURCE=pollinations"
     );
   }
 
-  const images = [];
-  const prompt = `Professional marketing banner for ${data.company}, ${data.industry} industry, high quality, clean design, no text`;
+  if (!hf) {
+    return generateFreeImages(data, "HF_TOKEN missing — using free Pollinations");
+  }
 
-  for (let i = 0; i < (Number(data.postsPerDay) || 1); i++) {
+  const images = [];
+  const count = Number(data.postsPerDay) || 1;
+
+  for (let i = 0; i < count; i++) {
+    const prompt = buildImagePrompt(data, i + 1);
     try {
-      images.push(await generateOneImage(`${prompt}, variation ${i + 1}`));
+      if (source === "huggingface") {
+        images.push(await generateOneHfImage(prompt));
+      } else {
+        // auto: try HF first, fall back to free Pollinations
+        try {
+          images.push(await generateOneHfImage(prompt));
+        } catch (err) {
+          console.log("❌ HF failed, falling back to Pollinations:", err.message);
+          images.push(
+            await generatePollinationsImage(prompt, Date.now() + i)
+          );
+        }
+      }
     } catch (err) {
-      console.log("❌ HF ALL PROVIDERS FAILED:", err.message);
-      console.log(
-        "Fix: 1) hf.co/settings/tokens → enable 'Make calls to Inference Providers' 2) hf.co/settings/billing → need credits 3) set HF_IMAGE_PROVIDER=together"
-      );
-      images.push(
-        `https://picsum.photos/600/400?random=${Date.now()}_${i}`
-      );
+      console.log("❌ Image generation failed:", err.message);
+      try {
+        images.push(await generatePollinationsImage(prompt, Date.now() + i));
+      } catch {
+        images.push(picsumFallback(i));
+      }
     }
   }
 
