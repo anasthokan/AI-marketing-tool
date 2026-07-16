@@ -7,6 +7,8 @@ export default function Dashboard() {
     company: "",
     industry: "",
     website: "",
+    inquiryUrl: "",
+    whatsapp: "",
     audience: "",
     country: "",
     platform: [],
@@ -115,20 +117,69 @@ export default function Dashboard() {
         <h3 className="text-center mb-4">🚀 AI Marketing Tool</h3>
 
         <div className="row g-3">
-          {Object.keys(form)
-            .slice(0, 5)
-            .map((field) => (
-              <div className="col-md-6" key={field}>
-                <input
-                  type="text"
-                  className="form-control"
-                  placeholder={field.charAt(0).toUpperCase() + field.slice(1)}
-                  onChange={(e) =>
-                    setForm({ ...form, [field]: e.target.value })
-                  }
-                />
-              </div>
-            ))}
+          <div className="col-md-6">
+            <input
+              type="text"
+              className="form-control"
+              placeholder="Company"
+              value={form.company}
+              onChange={(e) => setForm({ ...form, company: e.target.value })}
+            />
+          </div>
+          <div className="col-md-6">
+            <input
+              type="text"
+              className="form-control"
+              placeholder="Industry"
+              value={form.industry}
+              onChange={(e) => setForm({ ...form, industry: e.target.value })}
+            />
+          </div>
+          <div className="col-md-6">
+            <input
+              type="url"
+              className="form-control"
+              placeholder="Website "
+              value={form.website}
+              onChange={(e) => setForm({ ...form, website: e.target.value })}
+            />
+          </div>
+          <div className="col-md-6">
+            <input
+              type="url"
+              className="form-control"
+              placeholder="Inquiry URL (optional, defaults to website)"
+              value={form.inquiryUrl}
+              onChange={(e) => setForm({ ...form, inquiryUrl: e.target.value })}
+            />
+          </div>
+          <div className="col-md-6">
+            <input
+              type="tel"
+              className="form-control"
+              placeholder="WhatsApp number (e.g. +966501234567)"
+              value={form.whatsapp}
+              onChange={(e) => setForm({ ...form, whatsapp: e.target.value })}
+            />
+          </div>
+          <div className="col-md-6">
+            <input
+              type="text"
+              className="form-control"
+              placeholder="Audience"
+              value={form.audience}
+              onChange={(e) => setForm({ ...form, audience: e.target.value })}
+            />
+          </div>
+          <div className="col-md-6">
+            <input
+              type="text"
+              className="form-control"
+              placeholder="Country"
+              value={form.country}
+              onChange={(e) => setForm({ ...form, country: e.target.value })}
+            />
+          </div>
         </div>
 
         <div className="mt-4">

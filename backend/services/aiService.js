@@ -1,6 +1,7 @@
 import axios from "axios";
 import dotenv from "dotenv";
 import { InferenceClient } from "@huggingface/inference";
+import { addCtaButtonsToAll } from "../utils/imageOverlay.js";
 
 dotenv.config();
 
@@ -117,7 +118,13 @@ const generateImages = async (data) => {
 // ================= MAIN FUNCTION =================
 export const generatePost = async (data) => {
   const text = await generateText(data);
-  const images = await generateImages(data);
+  let images = await generateImages(data);
+
+  images = await addCtaButtonsToAll(images, {
+    website: data.website,
+    inquiryUrl: data.inquiryUrl || data.website,
+    whatsapp: data.whatsapp,
+  });
 
   return { text, images };
 };

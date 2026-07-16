@@ -3,6 +3,8 @@ import mongoose from "mongoose";
 const postSchema = new mongoose.Schema({
   company: String,
   website: String,
+  inquiryUrl: String,
+  whatsapp: String,
   industry: String,
   audience: String,
   country: String,

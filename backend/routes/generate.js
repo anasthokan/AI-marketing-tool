@@ -41,6 +41,8 @@ router.post("/generate", async (req, res) => {
         await Post.create({
           company: form.company,
           website: form.website,
+          inquiryUrl: form.inquiryUrl || form.website,
+          whatsapp: form.whatsapp,
           industry: form.industry,
           audience: form.audience,
           country: form.country,
