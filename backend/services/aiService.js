@@ -11,11 +11,15 @@ const skipHfImages = () =>
 // ================= TEXT GENERATION (LLAMA3 LOCAL) =================
 const generateText = async (data) => {
   try {
-    const res = await axios.post("http://localhost:11434/api/generate", {
-      model: "llama3",
-      prompt: `Generate marketing post for ${data.company} in ${data.industry} industry`,
-      stream: false,
-    });
+    const res = await axios.post(
+      "http://localhost:11434/api/generate",
+      {
+        model: "llama3",
+        prompt: `Generate marketing post for ${data.company} in ${data.industry} industry`,
+        stream: false,
+      },
+      { timeout: 15000 }
+    );
 
     return res.data.response;
   } catch (err) {
@@ -31,16 +35,22 @@ const hf = hfToken ? new InferenceClient(hfToken) : null;
 const imageModel =
   process.env.HF_IMAGE_MODEL || "black-forest-labs/FLUX.1-schnell";
 
-/**
- * Preferred providers (env first). fal-ai often needs billing credits;
- * together / nscale / hf-inference are tried as fallbacks.
- */
 const imageProviders = () => {
   const fromEnv = (process.env.HF_IMAGE_PROVIDER || "").trim();
-  const defaults = ["together", "nscale", "fal-ai", "replicate", "hf-inference"];
+  const defaults = ["together", "nscale", "fal-ai"];
   if (!fromEnv || fromEnv === "auto") return defaults;
   return [fromEnv, ...defaults.filter((p) => p !== fromEnv)];
 };
+
+const HF_IMAGE_TIMEOUT_MS = Number(process.env.HF_IMAGE_TIMEOUT_MS || 90000);
+
+const withTimeout = (promise, ms, label) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    ),
+  ]);
 
 const generateMockImages = (data, reason) => {
   const count = Number(data.postsPerDay) || 1;
@@ -60,15 +70,20 @@ const generateMockImages = (data, reason) => {
 
 const generateOneImage = async (prompt) => {
   let lastError = null;
+  const providers = imageProviders().slice(0, 3);
 
-  for (const provider of imageProviders()) {
+  for (const provider of providers) {
     try {
       console.log(`🎨 HF image via provider=${provider} model=${imageModel}`);
-      const image = await hf.textToImage({
-        model: imageModel,
-        inputs: prompt,
-        provider,
-      });
+      const image = await withTimeout(
+        hf.textToImage({
+          model: imageModel,
+          inputs: prompt,
+          provider,
+        }),
+        HF_IMAGE_TIMEOUT_MS,
+        `HF ${provider}`
+      );
 
       const buffer = Buffer.from(await image.arrayBuffer());
       const base64 = buffer.toString("base64");

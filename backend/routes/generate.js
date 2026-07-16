@@ -19,6 +19,9 @@ router.get("/health", (_req, res) => {
 });
 
 router.post("/generate", async (req, res) => {
+  req.setTimeout(600000);
+  res.setTimeout(600000);
+
   try {
     const form = req.body;
     const platforms = Array.isArray(form.platform) ? form.platform : [];
