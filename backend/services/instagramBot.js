@@ -4,20 +4,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { saveImage } from "../utils/saveImage.js";
 import { createMutex } from "../utils/mutex.js";
+import { resolveIgBrowserLaunch } from "../utils/igBrowser.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Edge profile (separate from Chrome) — Instagram blocks Chromium more often on servers
 const SESSION_DIR = path.resolve(__dirname, "..", "instagram-session-edge");
 const igMutex = createMutex();
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
-
-/** Prefer Edge on Windows servers; override with IG_BROWSER_CHANNEL=chrome if needed */
-const igBrowserChannel = () => {
-  const ch = String(process.env.IG_BROWSER_CHANNEL || "msedge")
-    .trim()
-    .toLowerCase();
-  return ch === "chrome" || ch === "chromium" ? undefined : ch;
-};
 
 const isHeaded = () => {
   const v = String(process.env.PUPPETEER_HEADLESS ?? "true")
@@ -401,14 +394,12 @@ const postOnce = async (caption, imageInputs) => {
       } catch {}
     }
 
-    const channel = igBrowserChannel();
-    console.log(
-      `Instagram browser: ${channel || "bundled Chromium"} (session: ${SESSION_DIR})`
-    );
+    const { label, options: browserOpts } = resolveIgBrowserLaunch();
+    console.log(`Instagram browser: ${label} (session: ${SESSION_DIR})`);
 
     browser = await puppeteer.launch({
       headless: !isHeaded(),
-      ...(channel ? { channel } : {}),
+      ...browserOpts,
       defaultViewport: { width: 1366, height: 768 },
       args: [
         "--no-sandbox",

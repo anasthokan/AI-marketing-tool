@@ -10,17 +10,11 @@ import fs from "fs";
 import path from "path";
 import readline from "readline";
 import { fileURLToPath } from "url";
+import { resolveIgBrowserLaunch } from "../utils/igBrowser.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SESSION_DIR = path.resolve(__dirname, "..", "instagram-session-edge");
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
-
-const igBrowserChannel = () => {
-  const ch = String(process.env.IG_BROWSER_CHANNEL || "msedge")
-    .trim()
-    .toLowerCase();
-  return ch === "chrome" || ch === "chromium" ? undefined : ch;
-};
 
 const waitEnter = (msg) =>
   new Promise((resolve) => {
@@ -103,16 +97,14 @@ if (fs.existsSync(lock)) {
   } catch {}
 }
 
-const channel = igBrowserChannel();
+const { label, options: browserOpts } = resolveIgBrowserLaunch();
 console.log("Session folder:", SESSION_DIR);
-console.log(
-  `Opening ${channel || "Chromium"} — login to Instagram, then come back here...`
-);
+console.log(`Opening ${label} — login to Instagram, then come back here...`);
 console.log("(Dots mean waiting. Ignore brief page reloads while you login.)");
 
 const browser = await puppeteer.launch({
   headless: false,
-  ...(channel ? { channel } : {}),
+  ...browserOpts,
   defaultViewport: null,
   args: ["--start-maximized", "--no-sandbox", "--disable-setuid-sandbox"],
   userDataDir: SESSION_DIR,
