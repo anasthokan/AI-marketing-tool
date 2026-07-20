@@ -9,6 +9,7 @@ build/
 Thumbs.db
 backend/facebook-session/
 backend/instagram-session/
+backend/instagram-session-edge/
 backend/linkedin-session/
 backend/temp_*.png
 backend/temp_*.jpg

@@ -6,9 +6,18 @@ import { saveImage } from "../utils/saveImage.js";
 import { createMutex } from "../utils/mutex.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SESSION_DIR = path.resolve(__dirname, "..", "instagram-session");
+// Edge profile (separate from Chrome) — Instagram blocks Chromium more often on servers
+const SESSION_DIR = path.resolve(__dirname, "..", "instagram-session-edge");
 const igMutex = createMutex();
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+
+/** Prefer Edge on Windows servers; override with IG_BROWSER_CHANNEL=chrome if needed */
+const igBrowserChannel = () => {
+  const ch = String(process.env.IG_BROWSER_CHANNEL || "msedge")
+    .trim()
+    .toLowerCase();
+  return ch === "chrome" || ch === "chromium" ? undefined : ch;
+};
 
 const isHeaded = () => {
   const v = String(process.env.PUPPETEER_HEADLESS ?? "true")
@@ -66,7 +75,7 @@ const isLoggedIn = async (page) => {
 };
 
 /**
- * If not logged in and headed mode: keep Chrome open so user can login on RDP.
+ * If not logged in and headed mode: keep Edge open so user can login on RDP.
  */
 const ensureLoggedIn = async (page) => {
   if (await isLoggedIn(page)) return true;
@@ -79,13 +88,13 @@ const ensureLoggedIn = async (page) => {
 
   if (!isHeaded()) {
     throw new Error(
-      "Instagram not logged in. On the server RDP: set PUPPETEER_HEADLESS=false, restart PM2, schedule a post, login in the open Chrome window — or run: npm run ig:login"
+      "Instagram not logged in. On the server RDP: set PUPPETEER_HEADLESS=false, restart PM2, schedule a post, login in the open Edge window — or run: npm run ig:login"
     );
   }
 
   const waitMs = Number(process.env.IG_LOGIN_WAIT_MS || 600000); // 10 min
   console.log(
-    `Instagram login required. Chrome will stay open for ${Math.round(
+    `Instagram login required. Edge will stay open for ${Math.round(
       waitMs / 1000
     )}s — login on RDP now...`
   );
@@ -392,8 +401,14 @@ const postOnce = async (caption, imageInputs) => {
       } catch {}
     }
 
+    const channel = igBrowserChannel();
+    console.log(
+      `Instagram browser: ${channel || "bundled Chromium"} (session: ${SESSION_DIR})`
+    );
+
     browser = await puppeteer.launch({
       headless: !isHeaded(),
+      ...(channel ? { channel } : {}),
       defaultViewport: { width: 1366, height: 768 },
       args: [
         "--no-sandbox",
@@ -406,7 +421,7 @@ const postOnce = async (caption, imageInputs) => {
 
     const page = await browser.newPage();
     await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
     );
 
     await page.goto("https://www.instagram.com/", {

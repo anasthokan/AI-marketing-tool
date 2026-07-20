@@ -1,6 +1,6 @@
 /**
  * Run this DIRECTLY in RDP PowerShell (NOT via PM2 / Jenkins schedule).
- * Chrome stays open until you finish Instagram login.
+ * Edge stays open until you finish Instagram login.
  *
  *   cd C:\inetpub\wwwroot\ai-marketing-backend
  *   node scripts/instagramLogin.js
@@ -12,8 +12,15 @@ import readline from "readline";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SESSION_DIR = path.resolve(__dirname, "..", "instagram-session");
+const SESSION_DIR = path.resolve(__dirname, "..", "instagram-session-edge");
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const igBrowserChannel = () => {
+  const ch = String(process.env.IG_BROWSER_CHANNEL || "msedge")
+    .trim()
+    .toLowerCase();
+  return ch === "chrome" || ch === "chromium" ? undefined : ch;
+};
 
 const waitEnter = (msg) =>
   new Promise((resolve) => {
@@ -96,18 +103,25 @@ if (fs.existsSync(lock)) {
   } catch {}
 }
 
+const channel = igBrowserChannel();
 console.log("Session folder:", SESSION_DIR);
-console.log("Opening Chrome — login to Instagram, then come back here...");
+console.log(
+  `Opening ${channel || "Chromium"} — login to Instagram, then come back here...`
+);
 console.log("(Dots mean waiting. Ignore brief page reloads while you login.)");
 
 const browser = await puppeteer.launch({
   headless: false,
+  ...(channel ? { channel } : {}),
   defaultViewport: null,
   args: ["--start-maximized", "--no-sandbox", "--disable-setuid-sandbox"],
   userDataDir: SESSION_DIR,
 });
 
 const page = await browser.newPage();
+await page.setUserAgent(
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
+);
 
 // Don't crash the script when Instagram navigates during login
 page.setDefaultNavigationTimeout(120000);
@@ -144,12 +158,12 @@ while (Date.now() - start < maxMs) {
 console.log("");
 
 if (ok) {
-  console.log("LOGIN OK — Instagram session saved.");
+  console.log("LOGIN OK — Instagram session saved (Edge).");
 } else {
   console.log("Still not logged in after 15 minutes.");
 }
 
-console.log("Press Enter to close Chrome...");
+console.log("Press Enter to close browser...");
 await waitEnter("");
 
 try {
