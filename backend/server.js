@@ -4,8 +4,18 @@ import mongoose from "mongoose";
 import dotenv from "dotenv";
 import generateRoute from "./routes/generate.js";
 import { startScheduler } from "./scheduler/postScheduler.js";
+import { resolveIgBrowserLaunch } from "./utils/igBrowser.js";
 
 dotenv.config();
+
+try {
+  const ig = resolveIgBrowserLaunch();
+  console.log(
+    `Instagram will use: ${ig.label}${ig.executablePath ? ` @ ${ig.executablePath}` : ""}`
+  );
+} catch (err) {
+  console.log("Instagram browser setup:", err.message);
+}
 
 const app = express();
 app.use(cors());

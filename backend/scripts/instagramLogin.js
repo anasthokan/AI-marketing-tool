@@ -10,7 +10,7 @@ import fs from "fs";
 import path from "path";
 import readline from "readline";
 import { fileURLToPath } from "url";
-import { resolveIgBrowserLaunch } from "../utils/igBrowser.js";
+import { resolveIgBrowserLaunch, assertEdgeProcess } from "../utils/igBrowser.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SESSION_DIR = path.resolve(__dirname, "..", "instagram-session-edge");
@@ -97,10 +97,13 @@ if (fs.existsSync(lock)) {
   } catch {}
 }
 
-const { label, options: browserOpts } = resolveIgBrowserLaunch();
+const { label, executablePath, options: browserOpts } = resolveIgBrowserLaunch();
 console.log("Session folder:", SESSION_DIR);
-console.log(`Opening ${label} — login to Instagram, then come back here...`);
+console.log(
+  `Opening ${label}${executablePath ? ` @ ${executablePath}` : ""} — login to Instagram, then come back here...`
+);
 console.log("(Dots mean waiting. Ignore brief page reloads while you login.)");
+console.log("NOTE: Edge looks similar to Chrome — Task Manager me msedge.exe dikhna chahiye.");
 
 const browser = await puppeteer.launch({
   headless: false,
@@ -109,6 +112,7 @@ const browser = await puppeteer.launch({
   args: ["--start-maximized", "--no-sandbox", "--disable-setuid-sandbox"],
   userDataDir: SESSION_DIR,
 });
+assertEdgeProcess(browser);
 
 const page = await browser.newPage();
 await page.setUserAgent(

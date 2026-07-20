@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { saveImage } from "../utils/saveImage.js";
 import { createMutex } from "../utils/mutex.js";
-import { resolveIgBrowserLaunch } from "../utils/igBrowser.js";
+import { resolveIgBrowserLaunch, assertEdgeProcess } from "../utils/igBrowser.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Edge profile (separate from Chrome) — Instagram blocks Chromium more often on servers
@@ -394,8 +394,11 @@ const postOnce = async (caption, imageInputs) => {
       } catch {}
     }
 
-    const { label, options: browserOpts } = resolveIgBrowserLaunch();
-    console.log(`Instagram browser: ${label} (session: ${SESSION_DIR})`);
+    const { label, executablePath, options: browserOpts } =
+      resolveIgBrowserLaunch();
+    console.log(
+      `Instagram browser: ${label}${executablePath ? ` @ ${executablePath}` : ""} (session: ${SESSION_DIR})`
+    );
 
     browser = await puppeteer.launch({
       headless: !isHeaded(),
@@ -409,6 +412,7 @@ const postOnce = async (caption, imageInputs) => {
       ],
       userDataDir: SESSION_DIR,
     });
+    assertEdgeProcess(browser);
 
     const page = await browser.newPage();
     await page.setUserAgent(
