@@ -18,7 +18,7 @@ if (-not (Test-Path $PhysicalPath)) {
 
 # Ensure web.config exists in site folder (copied by deploy.ps1 from repo)
 if (-not (Test-Path (Join-Path $PhysicalPath "web.config"))) {
-  throw "Missing $PhysicalPath\web.config — run deploy first so backend files (incl. web.config) are copied."
+  throw "Missing $PhysicalPath\web.config - run deploy first so backend files (incl. web.config) are copied."
 }
 
 # Firewall

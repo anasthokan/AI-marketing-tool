@@ -1,4 +1,4 @@
-# Run ON THE SERVER (RDP) — downloads latest Instagram Edge files from GitHub
+# Run ON THE SERVER (RDP) - downloads latest Instagram Edge files from GitHub
 # into the live backend. No git repo folder required.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\hotpatch-instagram-edge.ps1
@@ -30,7 +30,7 @@ foreach ($f in $files) {
 
 $check = Join-Path $dst "utils\igBrowser.js"
 if (-not (Select-String -Path $check -Pattern "assertEdgeProcess" -Quiet)) {
-  throw "Download failed — igBrowser.js missing assertEdgeProcess"
+  throw "Download failed - igBrowser.js missing assertEdgeProcess"
 }
 
 Write-Host "Restarting PM2: $pm2"

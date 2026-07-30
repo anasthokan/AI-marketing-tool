@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 if (-not (Test-Path (Join-Path $ServerRepo ".git"))) {
-  throw "Git repo not found at $ServerRepo — clone the repo there first."
+  throw "Git repo not found at $ServerRepo - clone the repo there first."
 }
 
 Write-Host "==> git pull in $ServerRepo"
@@ -38,7 +38,7 @@ foreach ($rel in $files) {
 # Prove Edge helper is live
 $check = Join-Path $BackendDest "utils\igBrowser.js"
 if (-not (Select-String -Path $check -Pattern "assertEdgeProcess" -Quiet)) {
-  throw "Patch failed — igBrowser.js does not contain assertEdgeProcess"
+  throw "Patch failed - igBrowser.js does not contain assertEdgeProcess"
 }
 
 Write-Host "==> pm2 restart $Pm2AppName"

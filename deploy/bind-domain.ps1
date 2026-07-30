@@ -65,7 +65,7 @@ if (-not $SkipApiBinding) {
     Write-Host "  VITE_API_URL=http://$ApiHostName"
     Write-Host "  (or keep http://${ServerIP}:522 until DNS for api subdomain is ready)"
   } else {
-    Write-Host "Backend site '$BackendSite' not found — skipped API binding."
+    Write-Host "Backend site '$BackendSite' not found - skipped API binding."
   }
 }
 

@@ -23,7 +23,7 @@ if (Test-Path "C:\inetpub\wwwroot") {
   exit 0
 }
 
-# Case 2: Jenkins on laptop — SSH into server, ensure repo exists, pull + deploy
+# Case 2: Jenkins on laptop - SSH into server, ensure repo exists, pull + deploy
 Write-Host "==> Remote deploy via SSH to $ServerHost"
 
 if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) {

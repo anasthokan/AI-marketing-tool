@@ -25,13 +25,13 @@ New-Item -ItemType Directory -Force -Path $BackendPath  | Out-Null
 #   backend\*          -> C:\apps\ai-marketing\backend  (including .env)
 
 if (-not (Test-Path (Join-Path $FrontendPath "index.html"))) {
-  throw "Missing $FrontendPath\index.html — copy frontend dist files first."
+  throw "Missing $FrontendPath\index.html - copy frontend dist files first."
 }
 if (-not (Test-Path (Join-Path $BackendPath "server.js"))) {
-  throw "Missing $BackendPath\server.js — copy backend folder first."
+  throw "Missing $BackendPath\server.js - copy backend folder first."
 }
 if (-not (Test-Path (Join-Path $BackendPath ".env"))) {
-  throw "Missing $BackendPath\.env — copy .env with MONGO_URI / HF_TOKEN / PORT."
+  throw "Missing $BackendPath\.env - copy .env with MONGO_URI / HF_TOKEN / PORT."
 }
 
 Write-Host "==> Backend npm install..." -ForegroundColor Cyan
