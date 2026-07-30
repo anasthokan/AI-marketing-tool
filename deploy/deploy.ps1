@@ -38,7 +38,7 @@ Write-Host "==> Repo root: $Root"
 Write-Host "==> Node: $(node -v)  npm: $(npm -v)"
 try {
   Push-Location $Root
-  Write-Host "==> Deploying commit: $(git rev-parse --short HEAD) — $(git log -1 --pretty=%s)"
+  Write-Host "==> Deploying commit: $(git rev-parse --short HEAD) - $(git log -1 --pretty=%s)"
   Pop-Location
 } catch {}
 
