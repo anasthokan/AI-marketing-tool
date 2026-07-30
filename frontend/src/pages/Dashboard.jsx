@@ -562,17 +562,8 @@ export default function Dashboard() {
               />
             </div>
 
-            <p className="text-muted small mb-3">
-              No AI image generation — jo image aap upload karoge, wahi post hogi.
-            </p>
-
             <div className="mb-3">
-              <label className="form-label fw-bold">
-                Upload images{" "}
-                <span className="fw-normal text-muted">
-                  (multiple OK — up to 10 for carousel)
-                </span>
-              </label>
+              <label className="form-label fw-bold">Upload images</label>
               <input
                 type="file"
                 className="form-control"
