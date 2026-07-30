@@ -11,6 +11,7 @@ const postSchema = new mongoose.Schema({
   platform: [String],
   posts: [String],
   images: [String],
+  source: { type: String, default: "ai" }, // "ai" | "manual"
   scheduledTime: String, // "10:30"
   postsPerDay: { type: Number, default: 1 },
   lastPostedDate: { type: String, default: null },

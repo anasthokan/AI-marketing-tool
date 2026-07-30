@@ -62,6 +62,19 @@ export const startScheduler = () => {
           continue;
         }
 
+        const isManual = post.source === "manual";
+        const hasImages =
+          Array.isArray(post.images) && post.images.length > 0;
+
+        // Manual posts: only uploaded images — never invent / generate a new one
+        if (isManual && !hasImages) {
+          console.log(
+            "Manual post has no uploaded images — skipping:",
+            post._id
+          );
+          continue;
+        }
+
         // Claim immediately so next minute does not overlap
         post.lastPostedDate = todayDate;
         post.scheduledTime = scheduled;
@@ -70,14 +83,15 @@ export const startScheduler = () => {
         console.log("DAILY POST TRIGGERED", {
           id: post._id,
           scheduled,
+          source: post.source || "ai",
           platforms: post.platform,
           postsPerDay: post.postsPerDay,
+          imageCount: hasImages ? post.images.length : 0,
         });
 
-        const images =
-          Array.isArray(post.images) && post.images.length > 0
-            ? post.images
-            : [`https://picsum.photos/400/300?random=${Date.now()}`];
+        const images = hasImages
+          ? post.images
+          : [`https://picsum.photos/400/300?random=${Date.now()}`];
 
         const caption = Array.isArray(post.posts)
           ? post.posts[0]

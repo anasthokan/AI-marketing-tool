@@ -24,3 +24,4 @@ coverage/
 
 backend/temp.jpg
 backend/*.jpg
+backend/uploads/
