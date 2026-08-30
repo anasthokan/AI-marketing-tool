@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { saveImage } from "../utils/saveImage.js";
+import { isVideoMedia, saveMediaFile } from "../utils/media.js";
 import { createMutex } from "../utils/mutex.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -170,38 +171,46 @@ const postOnce = async (caption, imageInputs) => {
     await delay(2000);
 
     if (imageInputs && imageInputs.length > 0) {
+      const videoPost = imageInputs.some(isVideoMedia);
+
       for (let i = 0; i < imageInputs.length; i++) {
-        const imgPath = path.resolve(`fb_${Date.now()}_${i}.png`);
-        const saved = await saveImage(imageInputs[i], imgPath);
-        if (saved) imagePaths.push(imgPath);
+        if (isVideoMedia(imageInputs[i])) {
+          const vidPath = path.resolve(`fb_${Date.now()}_${i}.mp4`);
+          const saved = await saveMediaFile(imageInputs[i], vidPath);
+          if (saved) imagePaths.push(saved);
+        } else {
+          const imgPath = path.resolve(`fb_${Date.now()}_${i}.png`);
+          const saved = await saveImage(imageInputs[i], imgPath);
+          if (saved) imagePaths.push(imgPath);
+        }
       }
 
       if (imagePaths.length === 0) {
-        throw new Error("Failed to prepare any Facebook images");
+        throw new Error("Failed to prepare any Facebook media");
       }
 
       let fileInput = await page.$("[role='dialog'] input[type='file']");
       if (!fileInput) {
-        await page.evaluate(() => {
+        await page.evaluate((accept) => {
           const dialog = document.querySelector("[role='dialog']");
           if (!dialog) return;
           let input = dialog.querySelector("input[type='file']");
           if (!input) {
             input = document.createElement("input");
             input.type = "file";
-            input.accept = "image/*";
+            input.accept = accept;
             input.multiple = true;
             input.style.display = "none";
             dialog.appendChild(input);
           }
-        });
+        }, videoPost ? "video/*,image/*" : "image/*");
         fileInput = await page.$("[role='dialog'] input[type='file']");
       }
 
       if (!fileInput) throw new Error("Facebook file input not found");
-      await fileInput.uploadFile(...imagePaths);
-      console.log("Images uploaded");
-      await delay(5000);
+      await fileInput.uploadFile(...(videoPost ? imagePaths.slice(0, 1) : imagePaths));
+      console.log(videoPost ? "Video uploaded" : "Images uploaded");
+      await delay(videoPost ? 15000 : 5000);
     }
 
     const postBtn = await page.waitForSelector(

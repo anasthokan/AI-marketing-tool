@@ -3,6 +3,13 @@ import fs from "fs";
 import path from "path";
 import mongoose from "mongoose";
 import { generatePost } from "../services/aiService.js";
+import { generateShortVideo } from "../services/videoService.js";
+import { getFfmpegPath } from "../utils/ffmpeg.js";
+import {
+  createVideoJob,
+  updateVideoJob,
+  getVideoJob,
+} from "../utils/videoProgress.js";
 import Post from "../models/Post.js";
 import { normalizeTime } from "../scheduler/postScheduler.js";
 
@@ -60,6 +67,8 @@ router.get("/health", (_req, res) => {
     mongo,
     mongoReady: mongoose.connection.readyState === 1,
     scheduleTz: process.env.SCHEDULE_TZ || "Asia/Kolkata",
+    ffmpeg: Boolean(getFfmpegPath()),
+    mpt: Boolean(String(process.env.MPT_API_URL || "").trim()),
   });
 });
 
@@ -179,6 +188,226 @@ router.post("/generate", async (req, res) => {
       message: saved
         ? `${isManual ? "Manual post" : "Content"} saved. Will post at ${scheduledTime} (${process.env.SCHEDULE_TZ || "Asia/Kolkata"}) via scheduler.`
         : `${actionLabel}, but not saved to DB: ${saveError || "MongoDB unavailable"}`,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
+});
+
+router.post("/generate-video", async (req, res) => {
+  req.setTimeout(600000);
+  res.setTimeout(600000);
+
+  try {
+    const form = req.body;
+    const topic = String(form.topic || form.videoSubject || "").trim();
+    if (!topic) {
+      return res.status(400).json({
+        success: false,
+        error: "Video topic is required",
+      });
+    }
+
+    const platforms = Array.isArray(form.platform) ? form.platform : [];
+    const postsPerDay = Math.min(Math.max(Number(form.postsPerDay) || 1, 1), 3);
+    const scheduledTime = normalizeTime(form.scheduledTime || "");
+
+    const targetSec = Math.min(
+      60,
+      Math.max(10, Math.round(Number(form.duration) || 15))
+    );
+
+    const jobId = String(form.jobId || "").trim();
+    if (jobId) {
+      createVideoJob(jobId);
+      updateVideoJob(jobId, {
+        progress: 3,
+        stage: "script",
+        label: "Starting…",
+        status: "running",
+      });
+    }
+
+    console.log("VIDEO GENERATE:", { topic, targetSec, platforms, scheduledTime, jobId });
+    const result = await generateShortVideo({
+      ...form,
+      topic,
+      duration: targetSec,
+      postsPerDay,
+      onProgress: (progress, stage, label) => {
+        if (!jobId) return;
+        updateVideoJob(jobId, { progress, stage, label, status: "running" });
+      },
+    });
+
+    if (jobId) {
+      updateVideoJob(jobId, {
+        progress: 100,
+        stage: "finish",
+        label: "Video ready",
+        status: "done",
+      });
+    }
+
+    const diskVideo = result.video || (result.videos && result.videos[0]) || null;
+    const previewVideo = diskVideo ? toPreviewUrl(diskVideo) : null;
+
+    res.json({
+      success: true,
+      text: result.text,
+      script: result.script,
+      video: previewVideo,
+      videos: previewVideo ? [previewVideo] : [],
+      images: [],
+      cta: result.cta || null,
+      mode: "video",
+      duration: targetSec,
+      postsPerDay,
+      scheduledTime: scheduledTime || null,
+      platforms,
+      posting: {},
+      saved: false,
+      needsConfirm: true,
+      message: `Preview ready (${targetSec}s). Watch the video, then confirm if you want to post.`,
+    });
+  } catch (err) {
+    console.error(err);
+    const failedJob = String(req.body?.jobId || "").trim();
+    if (failedJob) {
+      updateVideoJob(failedJob, {
+        status: "error",
+        label: err.message,
+        stage: "finish",
+      });
+    }
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
+});
+
+router.get("/video-progress/:jobId", (req, res) => {
+  const job = getVideoJob(String(req.params.jobId || "").trim());
+  if (!job) {
+    return res.json({
+      progress: 0,
+      stage: "script",
+      label: "Waiting…",
+      status: "running",
+    });
+  }
+  res.json(job);
+});
+
+const resolveConfirmVideoPath = (input) => {
+  if (!input || typeof input !== "string") return null;
+  let rel = input.trim().replace(/^https?:\/\/[^/]+/i, "");
+  if (rel.startsWith("/uploads/")) rel = rel.slice(1);
+  if (!rel.startsWith("uploads/")) return null;
+  const abs = path.resolve(rel);
+  const root = path.resolve("uploads", "videos");
+  const inside = path.relative(root, abs);
+  if (!inside || inside.startsWith("..") || path.isAbsolute(inside)) return null;
+  if (!fs.existsSync(abs)) return null;
+  return abs;
+};
+
+router.post("/confirm-video", async (req, res) => {
+  try {
+    const form = req.body;
+    const platforms = Array.isArray(form.platform) ? form.platform : [];
+    const postsPerDay = Math.min(Math.max(Number(form.postsPerDay) || 1, 1), 3);
+    const scheduledTime = normalizeTime(form.scheduledTime || "");
+    const caption = String(form.text || form.caption || "").trim();
+    const videoFile = resolveConfirmVideoPath(form.video);
+
+    if (!videoFile) {
+      return res.status(400).json({
+        success: false,
+        error: "Video file not found. Generate the video again.",
+      });
+    }
+    if (!caption) {
+      return res.status(400).json({
+        success: false,
+        error: "Caption is missing. Generate the video again.",
+      });
+    }
+    if (!platforms.length) {
+      return res.status(400).json({
+        success: false,
+        error: "Select at least one platform",
+      });
+    }
+    if (!scheduledTime) {
+      return res.status(400).json({
+        success: false,
+        error: "Please select post time",
+      });
+    }
+
+    let saved = false;
+    let saveError = null;
+    try {
+      if (mongoose.connection.readyState === 1) {
+        await Post.create({
+          company: form.company,
+          website: form.website,
+          inquiryUrl: form.inquiryUrl || form.website,
+          whatsapp: form.whatsapp,
+          industry: form.industry,
+          audience: form.audience,
+          country: form.country,
+          platform: platforms,
+          posts: [caption],
+          images: [],
+          videos: [videoFile],
+          source: "video",
+          confirmed: true,
+          scheduledTime,
+          postsPerDay,
+        });
+        saved = true;
+      } else {
+        saveError = "MongoDB not connected (is mongod running on 27017?)";
+        console.error(saveError);
+      }
+    } catch (dbErr) {
+      saveError = dbErr.message;
+      console.error("Post.save failed:", dbErr.message);
+    }
+
+    const posting = {
+      Instagram: platforms.includes("Instagram")
+        ? { success: true, queued: true, mode: "scheduled" }
+        : null,
+      Facebook: platforms.includes("Facebook")
+        ? { success: true, queued: true, mode: "scheduled" }
+        : null,
+    };
+
+    res.json({
+      success: saved,
+      text: caption,
+      video: toPreviewUrl(videoFile),
+      videos: [toPreviewUrl(videoFile)].filter(Boolean),
+      images: [],
+      mode: "video",
+      postsPerDay,
+      scheduledTime,
+      platforms,
+      posting,
+      saved,
+      saveError,
+      needsConfirm: false,
+      message: saved
+        ? `Confirmed. Will post at ${scheduledTime} (${process.env.SCHEDULE_TZ || "Asia/Kolkata"}) via scheduler.`
+        : `Could not save: ${saveError || "MongoDB unavailable"}`,
     });
   } catch (err) {
     console.error(err);

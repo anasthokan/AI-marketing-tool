@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { NavLink, useLocation } from "react-router-dom";
 import axios from "axios";
 import "bootstrap/dist/css/bootstrap.min.css";
 
@@ -21,8 +22,43 @@ const readFileAsDataUrl = (file) =>
     reader.readAsDataURL(file);
   });
 
+const VIDEO_STAGES = [
+  { id: "script", label: "Script" },
+  { id: "voice", label: "Voice" },
+  { id: "footage", label: "Footage" },
+  { id: "render", label: "Render" },
+  { id: "finish", label: "Done" },
+];
+
+const STAGE_RANGES = {
+  script: [0, 12],
+  voice: [12, 30],
+  footage: [30, 75],
+  render: [75, 95],
+  finish: [95, 100],
+};
+
+const segmentFill = (stageId, progress, currentStage) => {
+  const order = VIDEO_STAGES.map((s) => s.id);
+  const idx = order.indexOf(stageId);
+  const cur = order.indexOf(currentStage || "script");
+  if (idx < 0) return 0;
+  if (progress >= 100 || idx < cur) return 100;
+  if (idx > cur) return 0;
+  const [start, end] = STAGE_RANGES[stageId] || [0, 100];
+  return Math.min(100, Math.max(0, ((Number(progress) - start) / Math.max(1, end - start)) * 100));
+};
+
+const tabFromPath = (pathname) => {
+  const path = String(pathname || "/").replace(/\/$/, "") || "/";
+  if (path === "/manual") return "manual";
+  if (path === "/ai-video" || path === "/video") return "video";
+  return "ai";
+};
+
 export default function Dashboard() {
-  const [activeTab, setActiveTab] = useState("ai"); // "ai" | "manual"
+  const location = useLocation();
+  const activeTab = tabFromPath(location.pathname);
 
   const [form, setForm] = useState({
     company: "",
@@ -39,6 +75,17 @@ export default function Dashboard() {
 
   const [manualCaption, setManualCaption] = useState("");
   const [manualImages, setManualImages] = useState([]);
+
+  const [videoTopic, setVideoTopic] = useState("");
+  const [videoScript, setVideoScript] = useState("");
+  const [videoLanguage, setVideoLanguage] = useState("en");
+  const [videoVoice, setVideoVoice] = useState("en-in");
+  const [videoAspect, setVideoAspect] = useState("9:16");
+  const [videoDuration, setVideoDuration] = useState(15);
+  const [videoUrl, setVideoUrl] = useState("");
+  const [videoDraft, setVideoDraft] = useState(null);
+  const [confirming, setConfirming] = useState(false);
+  const [videoProgress, setVideoProgress] = useState(null);
 
   const [text, setText] = useState("");
   const [images, setImages] = useState([]);
@@ -77,13 +124,15 @@ export default function Dashboard() {
     }
   };
 
-  const switchTab = (tab) => {
-    setActiveTab(tab);
+  useEffect(() => {
     setStatus(null);
     setText("");
     setImages([]);
     setCta(null);
-  };
+    setVideoUrl("");
+    setVideoDraft(null);
+    setVideoProgress(null);
+  }, [location.pathname]);
 
   const handleManualImages = async (e) => {
     const files = Array.from(e.target.files || []);
@@ -172,6 +221,7 @@ export default function Dashboard() {
       setText("");
       setImages([]);
       setCta(null);
+      setVideoUrl("");
 
       const res = await axios.post(
         `${apiBase()}/api/generate`,
@@ -213,6 +263,7 @@ export default function Dashboard() {
       setText("");
       setImages([]);
       setCta(null);
+      setVideoUrl("");
 
       const res = await axios.post(
         `${apiBase()}/api/generate`,
@@ -247,6 +298,158 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleVideoSubmit = async () => {
+    try {
+      if (!videoTopic.trim()) {
+        alert("Please enter a video topic or keyword");
+        return;
+      }
+
+      setLoading(true);
+      setStatus(null);
+      setText("");
+      setImages([]);
+      setCta(null);
+      setVideoUrl("");
+      setVideoDraft(null);
+      const jobId =
+        typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `job_${Date.now()}`;
+      setVideoProgress({
+        progress: 2,
+        stage: "script",
+        label: "Starting…",
+        status: "running",
+      });
+
+      const poll = setInterval(async () => {
+        try {
+          const { data } = await axios.get(
+            `${apiBase()}/api/video-progress/${jobId}`,
+            { timeout: 4000 }
+          );
+          if (data) setVideoProgress(data);
+        } catch {
+          /* keep last known progress */
+        }
+      }, 700);
+
+      try {
+        const res = await axios.post(
+          `${apiBase()}/api/generate-video`,
+          {
+            jobId,
+            topic: videoTopic.trim(),
+            script: videoScript.trim(),
+            language: videoLanguage,
+            voice: videoVoice,
+            aspect: videoAspect,
+            duration: videoDuration,
+            company: form.company,
+            industry: form.industry,
+            website: form.website,
+            inquiryUrl: form.inquiryUrl,
+            whatsapp: form.whatsapp,
+            audience: form.audience,
+            country: form.country,
+          },
+          { timeout: 600000 }
+        );
+        setVideoProgress({
+          progress: 100,
+          stage: "finish",
+          label: "Video ready",
+          status: "done",
+        });
+        applyResponse(res);
+        const preview =
+          res.data.video ||
+          (Array.isArray(res.data.videos) ? res.data.videos[0] : "");
+        if (preview) {
+          const resolved =
+            preview.startsWith("/uploads/") ? `${apiBase()}${preview}` : preview;
+          setVideoUrl(resolved);
+          setVideoDraft({
+            video: preview,
+            text: res.data.text || "",
+          });
+        }
+      } finally {
+        clearInterval(poll);
+      }
+    } catch (err) {
+      console.log(err);
+      const apiError =
+        err.response?.data?.error ||
+        err.message ||
+        "Error generating video";
+      setStatus({
+        ok: false,
+        message: apiError,
+        posting: err.response?.data?.posting || {},
+      });
+      alert(apiError);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleConfirmVideo = async () => {
+    try {
+      if (!videoDraft?.video) {
+        alert("Generate a video first");
+        return;
+      }
+      if (!validateCommon()) return;
+
+      setConfirming(true);
+      const res = await axios.post(
+        `${apiBase()}/api/confirm-video`,
+        {
+          video: videoDraft.video,
+          text: videoDraft.text || text,
+          company: form.company,
+          industry: form.industry,
+          website: form.website,
+          inquiryUrl: form.inquiryUrl,
+          whatsapp: form.whatsapp,
+          audience: form.audience,
+          country: form.country,
+          platform: form.platform,
+          postsPerDay: form.postsPerDay,
+          scheduledTime: form.scheduledTime,
+        },
+        { timeout: 60000 }
+      );
+      applyResponse(res);
+      setVideoDraft(null);
+    } catch (err) {
+      console.log(err);
+      const apiError =
+        err.response?.data?.error ||
+        err.message ||
+        "Could not schedule video";
+      setStatus({
+        ok: false,
+        message: apiError,
+        posting: err.response?.data?.posting || {},
+      });
+      alert(apiError);
+    } finally {
+      setConfirming(false);
+    }
+  };
+
+  const handleDiscardVideo = () => {
+    setVideoDraft(null);
+    setStatus({
+      ok: true,
+      message: "Not posted. Video was kept for preview only — generate again if you want a new one.",
+      posting: {},
+    });
   };
 
   const postingEntries = status?.posting
@@ -358,13 +561,63 @@ export default function Dashboard() {
     <>
       {text && (
         <div className="mt-4">
-          <h5>{activeTab === "manual" ? "📝 Caption" : "📝 Generated Post"}</h5>
+          <h5>
+            {activeTab === "manual"
+              ? "📝 Caption"
+              : activeTab === "video"
+                ? "📝 Video caption"
+                : "📝 Generated Post"}
+          </h5>
           <div
             className="bg-light p-3 rounded"
             style={{ whiteSpace: "pre-wrap" }}
           >
             {text}
           </div>
+        </div>
+      )}
+
+      {videoUrl && (
+        <div className="mt-4">
+          <h5>🎬 Generated video</h5>
+          <video
+            src={videoUrl}
+            controls
+            playsInline
+            className="w-100 rounded shadow"
+            style={{
+              maxHeight: videoAspect === "9:16" ? "520px" : "360px",
+              background: "#111",
+            }}
+          />
+          {videoDraft && (
+            <div className="alert alert-info mt-3 mb-0">
+              <div className="fw-bold">Is this video good enough to post?</div>
+              <div className="small mt-1">
+                Agar video acchi nahi lagi, <strong>Don&apos;t post</strong>{" "}
+                dabao. Platforms aur time select karke confirm karo tabhi
+                schedule hoga.
+              </div>
+              <div className="d-flex flex-wrap gap-2 mt-3">
+                <button
+                  type="button"
+                  className="btn btn-success"
+                  onClick={handleConfirmVideo}
+                  disabled={confirming || loading}
+                >
+                  {confirming ? "Scheduling..." : "Yes, schedule post"}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline-secondary"
+                  onClick={handleDiscardVideo}
+                  disabled={confirming || loading}
+                >
+                  No, don&apos;t post
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -426,22 +679,35 @@ export default function Dashboard() {
 
         <ul className="nav nav-tabs mb-4">
           <li className="nav-item">
-            <button
-              type="button"
-              className={`nav-link ${activeTab === "ai" ? "active" : ""}`}
-              onClick={() => switchTab("ai")}
+            <NavLink
+              to="/"
+              end
+              className={() =>
+                `nav-link ${activeTab === "ai" ? "active" : ""}`
+              }
             >
               AI Generated
-            </button>
+            </NavLink>
           </li>
           <li className="nav-item">
-            <button
-              type="button"
-              className={`nav-link ${activeTab === "manual" ? "active" : ""}`}
-              onClick={() => switchTab("manual")}
+            <NavLink
+              to="/manual"
+              className={({ isActive }) =>
+                `nav-link ${isActive ? "active" : ""}`
+              }
             >
               Manual
-            </button>
+            </NavLink>
+          </li>
+          <li className="nav-item">
+            <NavLink
+              to="/ai-video"
+              className={({ isActive }) =>
+                `nav-link ${isActive ? "active" : ""}`
+              }
+            >
+              AI Video
+            </NavLink>
           </li>
         </ul>
 
@@ -538,7 +804,7 @@ export default function Dashboard() {
               {loading ? "Generating & posting..." : "Generate Content"}
             </button>
           </>
-        ) : (
+        ) : activeTab === "manual" ? (
           <>
             <div className="mb-3">
               <label className="form-label fw-bold">Company (optional)</label>
@@ -620,6 +886,226 @@ export default function Dashboard() {
             >
               {loading ? "Scheduling..." : "Schedule Manual Post"}
             </button>
+          </>
+        ) : (
+          <>
+            <p className="text-muted small mb-3">
+              Topic se HD short video (script, voice, footage, subtitles) —
+              Reels / Shorts ke liye. MoneyPrinterTurbo jaisa workflow.
+            </p>
+
+            <div className="mb-3">
+              <label className="form-label fw-bold">Topic / keyword</label>
+              <input
+                type="text"
+                className="form-control"
+                placeholder="e.g. Why solar panels save money in India"
+                value={videoTopic}
+                onChange={(e) => setVideoTopic(e.target.value)}
+              />
+            </div>
+
+            <div className="mb-3">
+              <label className="form-label fw-bold">
+                Custom script (optional)
+              </label>
+              <textarea
+                className="form-control"
+                rows={4}
+                placeholder="Leave blank to auto-generate the voiceover script"
+                value={videoScript}
+                onChange={(e) => setVideoScript(e.target.value)}
+              />
+            </div>
+
+            <div className="row g-3 mb-3">
+              <div className="col-6 col-md-3">
+                <label className="form-label">Language</label>
+                <select
+                  className="form-select"
+                  value={videoLanguage}
+                  onChange={(e) => {
+                    const language = e.target.value;
+                    setVideoLanguage(language);
+                    setVideoVoice(
+                      language === "hi"
+                        ? "hi-female"
+                        : language === "ar"
+                          ? "ar-male"
+                          : "en-in"
+                    );
+                  }}
+                >
+                  <option value="en">English</option>
+                  <option value="hi">Hindi</option>
+                  <option value="ar">Arabic</option>
+                </select>
+              </div>
+              <div className="col-6 col-md-3">
+                <label className="form-label">Voice</label>
+                <select
+                  className="form-select"
+                  value={videoVoice}
+                  onChange={(e) => {
+                    const voice = e.target.value;
+                    setVideoVoice(voice);
+                    setVideoLanguage(
+                      voice.startsWith("hi")
+                        ? "hi"
+                        : voice.startsWith("ar")
+                          ? "ar"
+                          : "en"
+                    );
+                  }}
+                >
+                  <option value="en-in">English (India)</option>
+                  <option value="en-female">English Female</option>
+                  <option value="en-male">English Male</option>
+                  <option value="hi-female">Hindi Female</option>
+                  <option value="hi-male">Hindi Male</option>
+                  <option value="ar-male">Arabic Male</option>
+                  <option value="ar-female">Arabic Female</option>
+                </select>
+              </div>
+              <div className="col-6 col-md-3">
+                <label className="form-label">Aspect</label>
+                <select
+                  className="form-select"
+                  value={videoAspect}
+                  onChange={(e) => setVideoAspect(e.target.value)}
+                >
+                  <option value="9:16">9:16 Reels / Shorts</option>
+                  <option value="16:9">16:9 Landscape</option>
+                </select>
+              </div>
+              <div className="col-6 col-md-3">
+                <label className="form-label">Duration</label>
+                <select
+                  className="form-select"
+                  value={videoDuration}
+                  onChange={(e) => setVideoDuration(Number(e.target.value))}
+                >
+                  <option value={10}>10 seconds</option>
+                  <option value={15}>15 seconds</option>
+                  <option value={20}>20 seconds</option>
+                  <option value={30}>30 seconds</option>
+                  <option value={45}>45 seconds</option>
+                  <option value={60}>60 seconds</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="row g-3">
+              <div className="col-md-6">
+                <input
+                  type="text"
+                  className="form-control"
+                  placeholder="Company (optional, for caption)"
+                  value={form.company}
+                  onChange={(e) =>
+                    setForm({ ...form, company: e.target.value })
+                  }
+                />
+              </div>
+              <div className="col-md-6">
+                <input
+                  type="text"
+                  className="form-control"
+                  placeholder="Industry (optional)"
+                  value={form.industry}
+                  onChange={(e) =>
+                    setForm({ ...form, industry: e.target.value })
+                  }
+                />
+              </div>
+              <div className="col-md-6">
+                <input
+                  type="url"
+                  className="form-control"
+                  placeholder="Website (optional CTA)"
+                  value={form.website}
+                  onChange={(e) =>
+                    setForm({ ...form, website: e.target.value })
+                  }
+                />
+              </div>
+              <div className="col-md-6">
+                <input
+                  type="tel"
+                  className="form-control"
+                  placeholder="WhatsApp (optional CTA)"
+                  value={form.whatsapp}
+                  onChange={(e) =>
+                    setForm({ ...form, whatsapp: e.target.value })
+                  }
+                />
+              </div>
+            </div>
+
+            {platformPicker}
+            {scheduleRow}
+
+            <p className="text-muted small mt-3 mb-0">
+              Pehle video generate karo, preview dekho, phir confirm karoge tabhi
+              platform pe schedule hoga.
+            </p>
+
+            <button
+              onClick={handleVideoSubmit}
+              className="btn btn-dark w-100 mt-3"
+              disabled={loading || confirming}
+            >
+              {loading
+                ? "Generating video (script, voice, footage)..."
+                : "Generate Short Video"}
+            </button>
+
+            {loading && (
+              <div className="wa-status mt-3">
+                <div className="wa-status-track">
+                  {VIDEO_STAGES.map((stage) => (
+                    <div className="wa-status-seg" key={stage.id}>
+                      <div
+                        className="wa-status-seg-fill"
+                        style={{
+                          width: `${segmentFill(
+                            stage.id,
+                            videoProgress?.progress || 0,
+                            videoProgress?.stage
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="wa-status-labels">
+                  {VIDEO_STAGES.map((stage) => {
+                    const fill = segmentFill(
+                      stage.id,
+                      videoProgress?.progress || 0,
+                      videoProgress?.stage
+                    );
+                    const cls =
+                      fill >= 100
+                        ? "done"
+                        : videoProgress?.stage === stage.id
+                          ? "active"
+                          : "";
+                    return (
+                      <span className={cls} key={stage.id}>
+                        {stage.label}
+                      </span>
+                    );
+                  })}
+                </div>
+                <div className="wa-status-meta">
+                  <span>{videoProgress?.label || "Working…"}</span>
+                  <span>
+                    {Math.round(Number(videoProgress?.progress) || 0)}%
+                  </span>
+                </div>
+              </div>
+            )}
           </>
         )}
 

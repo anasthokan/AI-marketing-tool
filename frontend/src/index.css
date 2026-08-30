@@ -109,3 +109,68 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+
+.wa-status {
+  background: #111b21;
+  border-radius: 12px;
+  padding: 12px 14px;
+  text-align: left;
+  color: #e9edef;
+}
+
+.wa-status-track {
+  display: flex;
+  gap: 4px;
+}
+
+.wa-status-seg {
+  flex: 1;
+  height: 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.22);
+  overflow: hidden;
+}
+
+.wa-status-seg-fill {
+  height: 100%;
+  width: 0%;
+  background: #25d366;
+  border-radius: 4px;
+  transition: width 0.45s linear;
+}
+
+.wa-status-labels {
+  display: flex;
+  gap: 4px;
+  margin-top: 7px;
+}
+
+.wa-status-labels span {
+  flex: 1;
+  font-size: 10px;
+  line-height: 1.2;
+  color: rgba(255, 255, 255, 0.45);
+  text-align: center;
+}
+
+.wa-status-labels span.active,
+.wa-status-labels span.done {
+  color: #25d366;
+  font-weight: 600;
+}
+
+.wa-status-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: #e9edef;
+}
+
+.wa-status-meta span:last-child {
+  font-weight: 700;
+  color: #25d366;
+  white-space: nowrap;
+}

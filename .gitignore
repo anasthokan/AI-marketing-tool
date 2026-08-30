@@ -25,3 +25,5 @@ coverage/
 backend/temp.jpg
 backend/*.jpg
 backend/uploads/
+backend/temp_*.mp4
+backend/fb_*.mp4

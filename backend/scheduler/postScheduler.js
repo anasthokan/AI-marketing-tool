@@ -62,9 +62,19 @@ export const startScheduler = () => {
           continue;
         }
 
+        if (post.confirmed === false) {
+          console.log("Post not confirmed by user — skipping:", post._id);
+          continue;
+        }
+
         const isManual = post.source === "manual";
+        const isVideo = post.source === "video";
         const hasImages =
           Array.isArray(post.images) && post.images.length > 0;
+        const videos = Array.isArray(post.videos)
+          ? post.videos.filter(Boolean)
+          : [];
+        const hasVideos = videos.length > 0;
 
         // Manual posts: only uploaded images — never invent / generate a new one
         if (isManual && !hasImages) {
@@ -72,6 +82,11 @@ export const startScheduler = () => {
             "Manual post has no uploaded images — skipping:",
             post._id
           );
+          continue;
+        }
+
+        if (isVideo && !hasVideos) {
+          console.log("Video post has no file — skipping:", post._id);
           continue;
         }
 
@@ -87,11 +102,14 @@ export const startScheduler = () => {
           platforms: post.platform,
           postsPerDay: post.postsPerDay,
           imageCount: hasImages ? post.images.length : 0,
+          videoCount: videos.length,
         });
 
-        const images = hasImages
-          ? post.images
-          : [`https://picsum.photos/400/300?random=${Date.now()}`];
+        const media = hasVideos
+          ? videos
+          : hasImages
+            ? post.images
+            : [`https://picsum.photos/400/300?random=${Date.now()}`];
 
         const caption = Array.isArray(post.posts)
           ? post.posts[0]
@@ -104,12 +122,12 @@ export const startScheduler = () => {
           console.log(`Posting ${i + 1}/${totalPosts}`);
 
           if (platforms.includes("Instagram")) {
-            const ig = await postToInstagramBot(caption, images);
+            const ig = await postToInstagramBot(caption, media);
             console.log("Instagram:", ig);
           }
 
           if (platforms.includes("Facebook")) {
-            const fb = await postToFacebookBot(caption, images);
+            const fb = await postToFacebookBot(caption, media);
             console.log("Facebook:", fb);
           }
 

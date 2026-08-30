@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { saveImage } from "../utils/saveImage.js";
+import { isVideoMedia, saveMediaFile } from "../utils/media.js";
 import { createMutex } from "../utils/mutex.js";
 import { resolveIgBrowserLaunch, assertEdgeProcess } from "../utils/igBrowser.js";
 
@@ -384,7 +385,7 @@ const postOnce = async (caption, imageInputs) => {
 
   try {
     if (!imageInputs || imageInputs.length === 0) {
-      throw new Error("No images provided for Instagram");
+      throw new Error("No media provided for Instagram");
     }
 
     const lockFile = path.join(SESSION_DIR, "SingletonLock");
@@ -427,30 +428,37 @@ const postOnce = async (caption, imageInputs) => {
 
     await ensureLoggedIn(page);
 
-    const images = Array.isArray(imageInputs)
+    const media = Array.isArray(imageInputs)
       ? imageInputs.slice(0, 10)
       : [imageInputs];
+    const videoPost = media.some(isVideoMedia);
 
-    for (let i = 0; i < images.length; i++) {
+    for (let i = 0; i < media.length; i++) {
       const uniqueName = `${Date.now()}_${i}_${Math.random()
         .toString(36)
         .substring(7)}`;
-      const imgPath = path.resolve(`temp_${uniqueName}.png`);
 
-      const saved = await saveImage(images[i], imgPath);
-      if (saved) imagePaths.push(imgPath);
+      if (isVideoMedia(media[i])) {
+        const vidPath = path.resolve(`temp_${uniqueName}.mp4`);
+        const saved = await saveMediaFile(media[i], vidPath);
+        if (saved) imagePaths.push(saved);
+      } else {
+        const imgPath = path.resolve(`temp_${uniqueName}.png`);
+        const saved = await saveImage(media[i], imgPath);
+        if (saved) imagePaths.push(imgPath);
+      }
     }
 
     console.log("📦 Files ready:", imagePaths);
 
     if (imagePaths.length === 0) {
-      throw new Error("Failed to prepare any Instagram images");
+      throw new Error("Failed to prepare any Instagram media");
     }
 
     await clickCreate(page);
     await delay(5000);
 
-    if (imagePaths.length > 1) {
+    if (!videoPost && imagePaths.length > 1) {
       console.log("🟢 Enabling carousel mode...");
       await page.keyboard.down("Shift");
       await enableCarousel(page);
@@ -459,11 +467,12 @@ const postOnce = async (caption, imageInputs) => {
 
     await page.waitForSelector("input[type='file']", { timeout: 20000 });
     const fileInput = await page.$("input[type='file']");
-    await fileInput.uploadFile(...imagePaths);
+    const uploadFiles = videoPost ? imagePaths.slice(0, 1) : imagePaths;
+    await fileInput.uploadFile(...uploadFiles);
     await page.keyboard.up("Shift");
-    console.log("✅ Images uploaded");
+    console.log(videoPost ? "✅ Video uploaded" : "✅ Images uploaded");
 
-    await delay(5000);
+    await delay(videoPost ? 12000 : 5000);
 
     // Wait until crop/Next UI is ready after upload
     await page.waitForFunction(
@@ -471,7 +480,7 @@ const postOnce = async (caption, imageInputs) => {
         const dialog = document.querySelector("div[role='dialog']");
         if (!dialog) return false;
         const text = (dialog.innerText || "").toLowerCase();
-        return text.includes("next") || text.includes("crop");
+        return text.includes("next") || text.includes("crop") || text.includes("reel") || text.includes("video");
       },
       { timeout: 30000 }
     ).catch(() => {});
