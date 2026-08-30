@@ -383,9 +383,11 @@ export default function Dashboard() {
     } catch (err) {
       console.log(err);
       const apiError =
-        err.response?.data?.error ||
-        err.message ||
-        "Error generating video";
+        err.response?.status === 404
+          ? "Video API not found on the server (404). Backend needs a restart after deploy — the new /api/generate-video route is missing."
+          : err.response?.data?.error ||
+            err.message ||
+            "Error generating video";
       setStatus({
         ok: false,
         message: apiError,
@@ -594,9 +596,9 @@ export default function Dashboard() {
             <div className="alert alert-info mt-3 mb-0">
               <div className="fw-bold">Is this video good enough to post?</div>
               <div className="small mt-1">
-                Agar video acchi nahi lagi, <strong>Don&apos;t post</strong>{" "}
-                dabao. Platforms aur time select karke confirm karo tabhi
-                schedule hoga.
+                If you don&apos;t like the video, click{" "}
+                <strong>Don&apos;t post</strong>. Select platforms and time,
+                then confirm to schedule.
               </div>
               <div className="d-flex flex-wrap gap-2 mt-3">
                 <button
@@ -890,8 +892,8 @@ export default function Dashboard() {
         ) : (
           <>
             <p className="text-muted small mb-3">
-              Topic se HD short video (script, voice, footage, subtitles) —
-              Reels / Shorts ke liye. MoneyPrinterTurbo jaisa workflow.
+              Generate an HD short video from a topic (script, voice, footage,
+              subtitles) for Reels / Shorts.
             </p>
 
             <div className="mb-3">
@@ -1046,8 +1048,8 @@ export default function Dashboard() {
             {scheduleRow}
 
             <p className="text-muted small mt-3 mb-0">
-              Pehle video generate karo, preview dekho, phir confirm karoge tabhi
-              platform pe schedule hoga.
+              Generate the video first, preview it, then confirm to schedule it
+              on the selected platforms.
             </p>
 
             <button
