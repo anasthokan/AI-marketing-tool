@@ -144,48 +144,62 @@ const enableCarousel = async (page) => {
 
 // ================= CLICK CREATE =================
 const clickCreate = async (page) => {
-  for (let i = 0; i < 8; i++) {
-    const found = await page.evaluate(() => {
+  for (let i = 0; i < 10; i++) {
+    const target = await page.evaluate(() => {
       const sels = [
         "svg[aria-label='New post']",
         "svg[aria-label='New Post']",
         "svg[aria-label='Create']",
+        "[aria-label='New post']",
+        "[aria-label='Create']",
       ];
       for (const sel of sels) {
-        const svg = document.querySelector(sel);
-        if (!svg) continue;
+        const el = document.querySelector(sel);
+        if (!el) continue;
         const clickable =
-          svg.closest("a, div[role='link'], div[role='button'], button") || svg;
+          el.closest("a, div[role='link'], div[role='button'], button") || el;
         const rect = clickable.getBoundingClientRect();
         if (rect.width < 2 || rect.height < 2) continue;
+        if (rect.left > 360) continue;
         return {
           x: rect.left + rect.width / 2,
           y: rect.top + rect.height / 2,
         };
       }
-      const links = Array.from(
-        document.querySelectorAll("a, div[role='link'], span")
+
+      const wanted = ["create", "new post"];
+      const nodes = Array.from(
+        document.querySelectorAll(
+          "a, span, div, button, [role='link'], [role='button'], [role='menuitem']"
+        )
       );
-      const el = links.find((n) => {
-        const t = (n.innerText || "").trim().toLowerCase();
+      for (const n of nodes) {
+        const raw = (n.innerText || "").trim().toLowerCase();
+        const first = raw.split("\n")[0].replace(/^\+\s*/, "").trim();
         const al = (n.getAttribute("aria-label") || "").toLowerCase();
-        return (
-          t === "create" ||
-          t === "new post" ||
-          al === "new post" ||
-          al === "create"
+        const hit = wanted.some(
+          (w) => first === w || raw === w || raw === `+ ${w}` || al === w
         );
-      });
-      if (!el) return null;
-      const clickable =
-        el.closest("a, div[role='link'], div[role='button']") || el;
-      const rect = clickable.getBoundingClientRect();
-      if (rect.width < 2) return null;
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+        if (!hit) continue;
+        const clickable =
+          n.closest(
+            "a, [role='link'], [role='button'], [role='menuitem'], button"
+          ) || n;
+        const rect = clickable.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) continue;
+        if (rect.left > 360) continue;
+        const style = window.getComputedStyle(clickable);
+        if (style.visibility === "hidden" || style.display === "none") continue;
+        return {
+          x: rect.left + Math.min(rect.width, 48) / 2,
+          y: rect.top + rect.height / 2,
+        };
+      }
+      return null;
     });
 
-    if (found) {
-      await page.mouse.click(found.x, found.y, { delay: 50 });
+    if (target) {
+      await page.mouse.click(target.x, target.y, { delay: 60 });
       console.log("✅ Create clicked");
       await delay(2000);
       return;
@@ -230,13 +244,14 @@ const hasCaptionBox = async (page) => Boolean(await findCaptionBox(page));
 
 const hasShareButton = async (page) => {
   return page.evaluate(() => {
-    const dialog = document.querySelector("div[role='dialog']") || document.body;
+    const dialog = document.querySelector("div[role='dialog']");
+    if (!dialog) return false;
     const nodes = Array.from(
       dialog.querySelectorAll("button, [role='button'], div, span")
     );
     return nodes.some((n) => {
       const t = (n.innerText || "").trim().toLowerCase();
-      return t === "share" || t === "post";
+      return t === "share" || t === "share now";
     });
   });
 };
@@ -334,29 +349,26 @@ const clickShare = (page) =>
   clickByExactText(page, ["share", "post", "share now"], "Share");
 
 const pickComposerMode = async (page, videoPost) => {
-  const labels = videoPost ? ["reel", "reels", "post"] : ["post"];
-  for (let attempt = 0; attempt < 8; attempt++) {
+  // Current Instagram Create flyout is a left-sidebar popover, not always role=dialog.
+  // Video can go out as Post (photo/video) or Reel — click whichever is visible.
+  const labels = videoPost ? ["post", "reel", "reels"] : ["post"];
+  for (let attempt = 0; attempt < 12; attempt++) {
     const found = await page.evaluate((wanted) => {
-      const roots = Array.from(
-        document.querySelectorAll("[role='dialog'], [role='menu']")
-      );
-      if (!roots.length) return null;
-      const nodes = roots.flatMap((root) =>
-        Array.from(
-          root.querySelectorAll(
-            "[role='menuitem'], [role='menuitem'] span, button, a, span, div"
-          )
+      const nodes = Array.from(
+        document.querySelectorAll(
+          "[role='menuitem'], [role='menuitem'] span, [role='dialog'] span, [role='menu'] span, button, a, span, div"
         )
       );
       for (const label of wanted) {
         const el = nodes.find((n) => {
           const raw = (n.innerText || "").trim().toLowerCase();
           const first = raw.split("\n")[0].trim();
+          const al = (n.getAttribute("aria-label") || "").toLowerCase();
           return (
             first === label ||
             raw === label ||
             raw.startsWith(`${label}\n`) ||
-            raw.startsWith(`${label} `)
+            al === label
           );
         });
         if (!el) continue;
@@ -364,6 +376,9 @@ const pickComposerMode = async (page, videoPost) => {
           el.closest("[role='menuitem'], a, button, [role='button']") || el;
         const rect = clickable.getBoundingClientRect();
         if (rect.width < 2 || rect.height < 2) continue;
+        if (rect.left > 420) continue;
+        const style = window.getComputedStyle(clickable);
+        if (style.visibility === "hidden" || style.display === "none") continue;
         return {
           x: rect.left + rect.width / 2,
           y: rect.top + rect.height / 2,
@@ -374,7 +389,7 @@ const pickComposerMode = async (page, videoPost) => {
     }, labels);
 
     if (found) {
-      await page.mouse.click(found.x, found.y, { delay: 50 });
+      await page.mouse.click(found.x, found.y, { delay: 60 });
       console.log(`✅ Composer mode: ${found.label}`);
       await delay(2500);
       return found.label;
@@ -592,9 +607,14 @@ const postOnce = async (caption, imageInputs) => {
     }
 
     await clickCreate(page);
-    await delay(3000);
-    await pickComposerMode(page, videoPost);
-    await delay(videoPost ? 2000 : 2000);
+    await delay(1500);
+    let mode = await pickComposerMode(page, videoPost);
+    if (!mode) {
+      await clickCreate(page);
+      await delay(1500);
+      mode = await pickComposerMode(page, videoPost);
+    }
+    await delay(1500);
 
     if (!videoPost && imagePaths.length > 1) {
       console.log("🟢 Enabling carousel mode...");
@@ -603,7 +623,13 @@ const postOnce = async (caption, imageInputs) => {
       await delay(4000);
     }
 
-    await page.waitForSelector("input[type='file']", { timeout: 40000 });
+    try {
+      await page.waitForSelector("input[type='file']", { timeout: 15000 });
+    } catch {
+      console.log("No file input yet — clicking Post/Reel again");
+      await pickComposerMode(page, videoPost);
+      await page.waitForSelector("input[type='file']", { timeout: 25000 });
+    }
     const fileInput = await page.$("input[type='file']");
     const uploadFiles = videoPost ? imagePaths.slice(0, 1) : imagePaths;
     await fileInput.uploadFile(...uploadFiles);
