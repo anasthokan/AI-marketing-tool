@@ -2,10 +2,10 @@ import express from "express";
 import cors from "cors";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
-import path from "path";
 import generateRoute from "./routes/generate.js";
 import { startScheduler } from "./scheduler/postScheduler.js";
 import { resolveIgBrowserLaunch } from "./utils/igBrowser.js";
+import { getUploadsRoot } from "./utils/paths.js";
 
 dotenv.config();
 
@@ -39,7 +39,7 @@ mongoose.connection.on("reconnected", () => {
 });
 
 app.use("/api", generateRoute);
-app.use("/uploads", express.static(path.resolve("uploads")));
+app.use("/uploads", express.static(getUploadsRoot()));
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () =>

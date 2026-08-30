@@ -12,6 +12,7 @@ import {
   generateWithMoneyPrinter,
   isMptConfigured,
 } from "./mptClient.js";
+import { getUploadsRoot } from "../utils/paths.js";
 
 const VOICES = {
   "en-female": { voice: "en-US-AriaNeural", lang: "en-US" },
@@ -669,7 +670,7 @@ export const generateShortVideo = async (data) => {
   };
 
   const stamp = `${Date.now()}`;
-  const workDir = path.resolve("uploads", "videos", stamp);
+  const workDir = path.join(getUploadsRoot(), "videos", stamp);
   fs.mkdirSync(workDir, { recursive: true });
 
   let videoPath;

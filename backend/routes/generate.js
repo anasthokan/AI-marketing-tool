@@ -13,6 +13,7 @@ import {
 } from "../utils/videoProgress.js";
 import Post from "../models/Post.js";
 import { normalizeTime } from "../scheduler/postScheduler.js";
+import { getUploadsRoot } from "../utils/paths.js";
 
 const router = express.Router();
 
@@ -52,7 +53,7 @@ const toPreviewUrl = (filepath) => {
   if (filepath.startsWith("data:") || /^https?:\/\//i.test(filepath)) {
     return filepath;
   }
-  const uploadsRoot = path.resolve("uploads");
+  const uploadsRoot = getUploadsRoot();
   const abs = path.resolve(filepath);
   const rel = path.relative(uploadsRoot, abs);
   if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
@@ -268,6 +269,7 @@ router.post("/generate-video", async (req, res) => {
           stage: "finish",
           label: "Video ready",
           status: "done",
+          diskVideo,
           result: {
             success: true,
             text: result.text,
@@ -316,20 +318,30 @@ router.get("/video-progress/:jobId", (req, res) => {
       status: "running",
     });
   }
-  res.json(job);
+  const { diskVideo, ...safe } = job;
+  res.json(safe);
 });
 
 const resolveConfirmVideoPath = (input) => {
   if (!input || typeof input !== "string") return null;
   let rel = input.trim().replace(/^https?:\/\/[^/]+/i, "");
   if (rel.startsWith("/uploads/")) rel = rel.slice(1);
+  rel = rel.replace(/\\/g, "/").replace(/^\//, "");
   if (!rel.startsWith("uploads/")) return null;
-  const abs = path.resolve(rel);
-  const root = path.resolve("uploads", "videos");
-  const inside = path.relative(root, abs);
-  if (!inside || inside.startsWith("..") || path.isAbsolute(inside)) return null;
-  if (!fs.existsSync(abs)) return null;
-  return abs;
+
+  const uploadsRoot = getUploadsRoot();
+  const videosRoot = path.join(uploadsRoot, "videos");
+  const candidates = [
+    path.resolve(rel),
+    path.join(uploadsRoot, rel.replace(/^uploads\//, "")),
+  ];
+
+  for (const abs of candidates) {
+    const inside = path.relative(videosRoot, abs);
+    if (!inside || inside.startsWith("..") || path.isAbsolute(inside)) continue;
+    if (fs.existsSync(abs)) return abs;
+  }
+  return null;
 };
 
 router.post("/confirm-video", async (req, res) => {
@@ -338,19 +350,26 @@ router.post("/confirm-video", async (req, res) => {
     const platforms = Array.isArray(form.platform) ? form.platform : [];
     const postsPerDay = Math.min(Math.max(Number(form.postsPerDay) || 1, 1), 3);
     const scheduledTime = normalizeTime(form.scheduledTime || "");
-    const caption = String(form.text || form.caption || "").trim();
-    const videoFile = resolveConfirmVideoPath(form.video);
+    const jobId = String(form.jobId || "").trim();
+    const job = jobId ? getVideoJob(jobId) : null;
+    let videoFile =
+      job?.diskVideo && fs.existsSync(job.diskVideo) ? job.diskVideo : null;
+    if (!videoFile) videoFile = resolveConfirmVideoPath(form.video);
+
+    let caption = String(form.text || form.caption || "").trim();
+    if (!caption) caption = String(job?.result?.text || "").trim();
 
     if (!videoFile) {
       return res.status(400).json({
         success: false,
-        error: "Video file not found. Generate the video again.",
+        error:
+          "Saved video file was not found on the server. Click No, then generate once more.",
       });
     }
     if (!caption) {
       return res.status(400).json({
         success: false,
-        error: "Caption is missing. Generate the video again.",
+        error: "Caption is missing. Type a caption, then click Yes again.",
       });
     }
     if (!platforms.length) {

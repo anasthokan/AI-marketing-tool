@@ -17,6 +17,7 @@ if (-not (Test-Path $dst)) {
 $files = @(
   "package.json",
   "package-lock.json",
+  "server.js",
   "models/Post.js",
   "routes/generate.js",
   "scheduler/postScheduler.js",
@@ -26,6 +27,7 @@ $files = @(
   "services/mptClient.js",
   "utils/ffmpeg.js",
   "utils/media.js",
+  "utils/paths.js",
   "utils/videoProgress.js"
 )
 

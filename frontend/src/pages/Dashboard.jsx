@@ -304,8 +304,16 @@ export default function Dashboard() {
     }
   };
 
-  const handleVideoSubmit = async () => {
+  const handleVideoSubmit = async (e) => {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
     try {
+      if (videoDraft?.video) {
+        alert(
+          "This video is already ready. Click Yes, schedule post to save it with the caption — or No, don't post to generate a new one."
+        );
+        return;
+      }
       if (!videoTopic.trim()) {
         alert("Please enter a video topic or keyword");
         return;
@@ -397,6 +405,7 @@ export default function Dashboard() {
         setVideoDraft({
           video: preview,
           text: payload.text || "",
+          jobId: runningId,
         });
       }
     } catch (err) {
@@ -418,7 +427,9 @@ export default function Dashboard() {
     }
   };
 
-  const handleConfirmVideo = async () => {
+  const handleConfirmVideo = async (e) => {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
     try {
       if (!videoDraft?.video) {
         alert("Generate a video first");
@@ -429,7 +440,7 @@ export default function Dashboard() {
       const caption =
         captionMode === "manual"
           ? videoCaptionManual.trim()
-          : String(videoDraft.text || text || "").trim();
+          : String(videoDraft.text || text || videoTopic || "").trim();
       if (!caption) {
         alert(
           captionMode === "manual"
@@ -443,6 +454,7 @@ export default function Dashboard() {
       const res = await axios.post(
         `${apiBase()}/api/confirm-video`,
         {
+          jobId: videoDraft.jobId || "",
           video: videoDraft.video,
           text: caption,
           company: form.company,
@@ -460,6 +472,7 @@ export default function Dashboard() {
       );
       applyResponse(res);
       setVideoDraft(null);
+      setVideoProgress(null);
     } catch (err) {
       console.log(err);
       const apiError =
@@ -479,9 +492,13 @@ export default function Dashboard() {
 
   const handleDiscardVideo = () => {
     setVideoDraft(null);
+    setVideoUrl("");
+    setVideoProgress(null);
+    setCaptionMode("auto");
+    setVideoCaptionManual("");
     setStatus({
       ok: true,
-      message: "Not posted. Video was kept for preview only — generate again if you want a new one.",
+      message: "Not posted. Generate a new video when you want to try again.",
       posting: {},
     });
   };
@@ -607,53 +624,15 @@ export default function Dashboard() {
         </div>
       )}
 
-      {(text || videoDraft) && activeTab === "video" && (
+      {(text || videoDraft) && activeTab === "video" && !videoDraft && (
         <div className="mt-4">
           <h5>📝 Video caption</h5>
-          <div className="d-flex flex-wrap gap-4 mb-3">
-            <div className="form-check">
-              <input
-                className="form-check-input"
-                type="radio"
-                name="videoCaptionMode"
-                id="captionAuto"
-                checked={captionMode === "auto"}
-                onChange={() => setCaptionMode("auto")}
-              />
-              <label className="form-check-label" htmlFor="captionAuto">
-                Use generated caption
-              </label>
-            </div>
-            <div className="form-check">
-              <input
-                className="form-check-input"
-                type="radio"
-                name="videoCaptionMode"
-                id="captionManual"
-                checked={captionMode === "manual"}
-                onChange={() => setCaptionMode("manual")}
-              />
-              <label className="form-check-label" htmlFor="captionManual">
-                Write my own caption
-              </label>
-            </div>
+          <div
+            className="bg-light p-3 rounded"
+            style={{ whiteSpace: "pre-wrap" }}
+          >
+            {text}
           </div>
-          {captionMode === "auto" ? (
-            <div
-              className="bg-light p-3 rounded"
-              style={{ whiteSpace: "pre-wrap" }}
-            >
-              {text || videoDraft?.text || ""}
-            </div>
-          ) : (
-            <textarea
-              className="form-control"
-              rows={6}
-              placeholder="Type or paste the caption to post with this video..."
-              value={videoCaptionManual}
-              onChange={(e) => setVideoCaptionManual(e.target.value)}
-            />
-          )}
         </div>
       )}
 
@@ -672,13 +651,56 @@ export default function Dashboard() {
           />
           {videoDraft && (
             <div className="alert alert-info mt-3 mb-0">
-              <div className="fw-bold">Is this video good enough to post?</div>
-              <div className="small mt-1">
-                If you don&apos;t like the video, click{" "}
-                <strong>Don&apos;t post</strong>. Select platforms and time,
-                then confirm to schedule.
+              <div className="fw-bold">Schedule this video with caption?</div>
+              <div className="small mt-1 mb-3">
+                Clicking Yes will save this video and caption to the scheduler.
+                It will not generate a new video.
               </div>
-              <div className="d-flex flex-wrap gap-2 mt-3">
+              <div className="d-flex flex-wrap gap-4 mb-2">
+                <div className="form-check">
+                  <input
+                    className="form-check-input"
+                    type="radio"
+                    name="videoCaptionMode"
+                    id="captionAuto"
+                    checked={captionMode === "auto"}
+                    onChange={() => setCaptionMode("auto")}
+                  />
+                  <label className="form-check-label" htmlFor="captionAuto">
+                    Use generated caption
+                  </label>
+                </div>
+                <div className="form-check">
+                  <input
+                    className="form-check-input"
+                    type="radio"
+                    name="videoCaptionMode"
+                    id="captionManual"
+                    checked={captionMode === "manual"}
+                    onChange={() => setCaptionMode("manual")}
+                  />
+                  <label className="form-check-label" htmlFor="captionManual">
+                    Write my own caption
+                  </label>
+                </div>
+              </div>
+              {captionMode === "auto" ? (
+                <div
+                  className="bg-white p-3 rounded border mb-3"
+                  style={{ whiteSpace: "pre-wrap" }}
+                >
+                  {text || videoDraft?.text || ""}
+                </div>
+              ) : (
+                <textarea
+                  className="form-control mb-3"
+                  rows={6}
+                  placeholder="Type or paste the caption to post with this video..."
+                  value={videoCaptionManual}
+                  onChange={(e) => setVideoCaptionManual(e.target.value)}
+                />
+              )}
+              <div className="d-flex flex-wrap gap-2">
                 <button
                   type="button"
                   className="btn btn-success"
@@ -1125,20 +1147,33 @@ export default function Dashboard() {
             {platformPicker}
             {scheduleRow}
 
-            <p className="text-muted small mt-3 mb-0">
-              Generate the video first, preview it, then confirm to schedule it
-              on the selected platforms.
-            </p>
+            {!videoDraft && (
+              <>
+                <p className="text-muted small mt-3 mb-0">
+                  Generate the video first, preview it, then confirm to schedule
+                  it on the selected platforms.
+                </p>
 
-            <button
-              onClick={handleVideoSubmit}
-              className="btn btn-dark w-100 mt-3"
-              disabled={loading || confirming}
-            >
-              {loading
-                ? "Generating video (script, voice, footage)..."
-                : "Generate Short Video"}
-            </button>
+                <button
+                  type="button"
+                  onClick={handleVideoSubmit}
+                  className="btn btn-dark w-100 mt-3"
+                  disabled={loading || confirming}
+                >
+                  {loading
+                    ? "Generating video (script, voice, footage)..."
+                    : "Generate Short Video"}
+                </button>
+              </>
+            )}
+
+            {videoDraft && !loading && (
+              <p className="text-success small mt-3 mb-0">
+                Video is ready below. Click <strong>Yes, schedule post</strong>{" "}
+                to save it with the caption — this will not generate a new
+                video.
+              </p>
+            )}
 
             {loading && (
               <div className="wa-status mt-3">
