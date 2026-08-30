@@ -18,13 +18,14 @@ const isHeaded = () => {
   return v === "false" || v === "0" || v === "no";
 };
 
-const VIEWPORT = { width: 1400, height: 900 };
+const VIEWPORT = { width: 1400, height: 1080 };
 const CHROME_ARGS = [
   "--no-sandbox",
   "--disable-setuid-sandbox",
   "--disable-dev-shm-usage",
-  "--window-size=1400,1000",
+  "--window-size=1400,1080",
   "--window-position=0,0",
+  "--start-maximized",
   "--disable-session-crashed-bubble",
   "--hide-crash-restore-bubble",
   "--disable-infobars",
@@ -122,35 +123,98 @@ const ensureLoggedIn = async (page) => {
   );
 };
 
-/** Click Post even if the footer is below the taskbar / off-screen. */
+const maximizeWindow = async (page) => {
+  try {
+    const session = await page.target().createCDPSession();
+    const { windowId } = await session.send("Browser.getWindowForTarget");
+    await session.send("Browser.setWindowBounds", {
+      windowId,
+      bounds: { windowState: "maximized" },
+    });
+  } catch (err) {
+    console.log("Maximize skipped:", err.message);
+  }
+};
+
+const pasteCaption = async (page, caption) => {
+  const ok = await page.evaluate((text) => {
+    const box =
+      document.querySelector("[role='dialog'] div[role='textbox']") ||
+      document.querySelector("div[role='textbox']");
+    if (!box) return false;
+    box.focus();
+    document.execCommand("selectAll", false, null);
+    const inserted = document.execCommand("insertText", false, text);
+    if (!inserted) {
+      box.textContent = text;
+      box.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          data: text,
+          inputType: "insertText",
+        })
+      );
+    }
+    return true;
+  }, caption);
+  if (!ok) throw new Error("Facebook caption box not found");
+  console.log("Caption pasted");
+};
+
+const dismissPopups = async (page) => {
+  for (let i = 0; i < 3; i++) {
+    try {
+      await page.keyboard.press("Escape");
+    } catch {}
+    await delay(250);
+  }
+};
+
+const scrollComposerToPost = async (page) => {
+  await page.evaluate(() => {
+    const dialog = document.querySelector("[role='dialog']");
+    if (!dialog) return;
+    const all = [dialog, ...dialog.querySelectorAll("*")];
+    for (const el of all) {
+      const st = window.getComputedStyle(el);
+      const oy = st.overflowY;
+      if (
+        (oy === "auto" || oy === "scroll" || oy === "overlay") &&
+        el.scrollHeight > el.clientHeight + 20
+      ) {
+        el.scrollTop = el.scrollHeight;
+      }
+    }
+    const btn = [...dialog.querySelectorAll("[aria-label='Post']")].pop();
+    if (!btn) return;
+    let p = btn.parentElement;
+    while (p) {
+      if (p.scrollHeight > p.clientHeight + 10) p.scrollTop = p.scrollHeight;
+      p = p.parentElement;
+    }
+    btn.scrollIntoView({ block: "end", inline: "nearest" });
+  });
+};
+
+/** Click Post even if the footer is below the fold / taskbar. */
 const clickFacebookPostButton = async (page) => {
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < 10; i++) {
+    await scrollComposerToPost(page);
     const result = await page.evaluate(() => {
       const dialog = document.querySelector("[role='dialog']");
       if (!dialog) return "no-dialog";
 
-      dialog.scrollTop = dialog.scrollHeight;
-      const scrollables = dialog.querySelectorAll("div");
-      for (const el of scrollables) {
-        if (el.scrollHeight > el.clientHeight + 40) {
-          el.scrollTop = el.scrollHeight;
-        }
-      }
-
-      const nodes = Array.from(
-        dialog.querySelectorAll("[role='button'], button, div[aria-label='Post']")
-      );
-      const matches = nodes.filter((el) => {
-        const aria = (el.getAttribute("aria-label") || "").trim().toLowerCase();
-        const text = (el.innerText || "").trim().toLowerCase();
-        return aria === "post" || text === "post";
-      });
+      const matches = [...dialog.querySelectorAll("[aria-label='Post']")];
       if (!matches.length) return "missing";
-
       const btn = matches[matches.length - 1];
       if (btn.getAttribute("aria-disabled") === "true") return "disabled";
 
-      btn.scrollIntoView({ block: "center", inline: "nearest" });
+      btn.focus();
+      for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
+        btn.dispatchEvent(
+          new MouseEvent(type, { bubbles: true, cancelable: true, view: window })
+        );
+      }
       btn.click();
       return "clicked";
     });
@@ -158,9 +222,28 @@ const clickFacebookPostButton = async (page) => {
     console.log("Facebook Post button:", result);
     if (result === "clicked") return true;
     if (result === "no-dialog") return false;
-    await delay(2000);
+    await delay(1500);
   }
   return false;
+};
+
+const submitFacebookPost = async (page) => {
+  await dismissPopups(page);
+  await scrollComposerToPost(page);
+  await delay(400);
+
+  await page.keyboard.down("Control");
+  await page.keyboard.press("Enter");
+  await page.keyboard.up("Control");
+  console.log("Sent Ctrl+Enter (Facebook publish shortcut)");
+  await delay(2500);
+
+  const closed = await page.evaluate(
+    () => !document.querySelector("[role='dialog']")
+  );
+  if (closed) return true;
+
+  return clickFacebookPostButton(page);
 };
 
 const postOnce = async (caption, imageInputs) => {
@@ -185,6 +268,7 @@ const postOnce = async (caption, imageInputs) => {
 
     const page = await browser.newPage();
     await page.setViewport(VIEWPORT);
+    await maximizeWindow(page);
     await page.setUserAgent(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     );
@@ -214,18 +298,12 @@ const postOnce = async (caption, imageInputs) => {
     await createBtn.click();
     console.log("Post box opened");
     await delay(4000);
+    await page.waitForSelector("[role='dialog']", { timeout: 20000 });
 
-    const textbox = await page.waitForSelector(
-      "[role='dialog'] div[role='textbox'], div[role='textbox']",
-      { visible: true, timeout: 20000 }
-    );
-    await textbox.click();
-    await page.keyboard.type(caption, { delay: 15 });
-    console.log("Caption added");
-    await delay(2000);
+    const videoPost =
+      Array.isArray(imageInputs) && imageInputs.some(isVideoMedia);
 
     if (imageInputs && imageInputs.length > 0) {
-      const videoPost = imageInputs.some(isVideoMedia);
 
       for (let i = 0; i < imageInputs.length; i++) {
         if (isVideoMedia(imageInputs[i])) {
@@ -334,7 +412,11 @@ const postOnce = async (caption, imageInputs) => {
       await delay(videoPost ? 4000 : 1500);
     }
 
-    const posted = await clickFacebookPostButton(page);
+    await pasteCaption(page, caption);
+    await delay(800);
+    await dismissPopups(page);
+
+    const posted = await submitFacebookPost(page);
     if (!posted) {
       throw new Error("Facebook Post button not found or still disabled");
     }
@@ -349,6 +431,12 @@ const postOnce = async (caption, imageInputs) => {
     return { success: true };
   } catch (err) {
     console.log("ERROR:", err.message);
+    if (isHeaded() && browser) {
+      console.log(
+        "Chrome staying open 2 minutes — press Ctrl+Enter to publish, or scroll the composer and click Post."
+      );
+      await delay(120000);
+    }
     return { success: false, error: err.message };
   } finally {
     for (const file of imagePaths) {
