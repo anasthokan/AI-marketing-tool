@@ -18,6 +18,19 @@ const isHeaded = () => {
   return v === "false" || v === "0" || v === "no";
 };
 
+const VIEWPORT = { width: 1400, height: 900 };
+const CHROME_ARGS = [
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  "--disable-dev-shm-usage",
+  "--window-size=1400,1000",
+  "--window-position=0,0",
+  "--disable-session-crashed-bubble",
+  "--hide-crash-restore-bubble",
+  "--disable-infobars",
+  "--noerrdialogs",
+];
+
 const CREATE_POST_SELECTORS = [
   "[aria-label='Create a post']",
   "[aria-label='Create Post']",
@@ -109,6 +122,47 @@ const ensureLoggedIn = async (page) => {
   );
 };
 
+/** Click Post even if the footer is below the taskbar / off-screen. */
+const clickFacebookPostButton = async (page) => {
+  for (let i = 0; i < 15; i++) {
+    const result = await page.evaluate(() => {
+      const dialog = document.querySelector("[role='dialog']");
+      if (!dialog) return "no-dialog";
+
+      dialog.scrollTop = dialog.scrollHeight;
+      const scrollables = dialog.querySelectorAll("div");
+      for (const el of scrollables) {
+        if (el.scrollHeight > el.clientHeight + 40) {
+          el.scrollTop = el.scrollHeight;
+        }
+      }
+
+      const nodes = Array.from(
+        dialog.querySelectorAll("[role='button'], button, div[aria-label='Post']")
+      );
+      const matches = nodes.filter((el) => {
+        const aria = (el.getAttribute("aria-label") || "").trim().toLowerCase();
+        const text = (el.innerText || "").trim().toLowerCase();
+        return aria === "post" || text === "post";
+      });
+      if (!matches.length) return "missing";
+
+      const btn = matches[matches.length - 1];
+      if (btn.getAttribute("aria-disabled") === "true") return "disabled";
+
+      btn.scrollIntoView({ block: "center", inline: "nearest" });
+      btn.click();
+      return "clicked";
+    });
+
+    console.log("Facebook Post button:", result);
+    if (result === "clicked") return true;
+    if (result === "no-dialog") return false;
+    await delay(2000);
+  }
+  return false;
+};
+
 const postOnce = async (caption, imageInputs) => {
   let browser = null;
   const imagePaths = [];
@@ -124,17 +178,13 @@ const postOnce = async (caption, imageInputs) => {
 
     browser = await puppeteer.launch({
       headless: !isHeaded(),
-      defaultViewport: { width: 1366, height: 768 },
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--window-size=1366,768",
-      ],
+      defaultViewport: VIEWPORT,
+      args: CHROME_ARGS,
       userDataDir: SESSION_DIR,
     });
 
     const page = await browser.newPage();
+    await page.setViewport(VIEWPORT);
     await page.setUserAgent(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     );
@@ -143,7 +193,11 @@ const postOnce = async (caption, imageInputs) => {
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
-    await delay(5000);
+    await delay(2000);
+    try {
+      await page.keyboard.press("Escape");
+    } catch {}
+    await delay(3000);
 
     let createBtn = await ensureLoggedIn(page);
     if (!createBtn) {
@@ -280,18 +334,10 @@ const postOnce = async (caption, imageInputs) => {
       await delay(videoPost ? 4000 : 1500);
     }
 
-    const postBtn = await page.waitForSelector(
-      "[role='dialog'] [aria-label='Post'], [role='dialog'] [aria-label='Post'] div, [role='dialog'] div[aria-label='Post']",
-      { visible: true, timeout: 20000 }
-    );
-
-    const isDisabled = await page.evaluate(
-      (btn) => btn.getAttribute("aria-disabled") === "true",
-      postBtn
-    );
-    if (isDisabled) throw new Error("Post button is disabled");
-
-    await postBtn.click({ delay: 100 });
+    const posted = await clickFacebookPostButton(page);
+    if (!posted) {
+      throw new Error("Facebook Post button not found or still disabled");
+    }
     console.log("Post clicked");
 
     await page.waitForFunction(() => !document.querySelector("[role='dialog']"), {

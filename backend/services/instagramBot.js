@@ -144,37 +144,50 @@ const enableCarousel = async (page) => {
 
 // ================= CLICK CREATE =================
 const clickCreate = async (page) => {
-  const selectors = [
-    "svg[aria-label='New post']",
-    "svg[aria-label='New Post']",
-    "svg[aria-label='Create']",
-  ];
-
   for (let i = 0; i < 8; i++) {
-    for (const sel of selectors) {
-      try {
-        const btn = await page.$(sel);
-        if (btn) {
-          await btn.click();
-          console.log("✅ Create clicked");
-          return;
-        }
-      } catch {}
-    }
-
-    // Fallback: sidebar Create / New post text
-    const clicked = await page.evaluate(() => {
-      const nodes = Array.from(document.querySelectorAll("a, div, span"));
-      const el = nodes.find((n) => {
+    const found = await page.evaluate(() => {
+      const sels = [
+        "svg[aria-label='New post']",
+        "svg[aria-label='New Post']",
+        "svg[aria-label='Create']",
+      ];
+      for (const sel of sels) {
+        const svg = document.querySelector(sel);
+        if (!svg) continue;
+        const clickable =
+          svg.closest("a, div[role='link'], div[role='button'], button") || svg;
+        const rect = clickable.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) continue;
+        return {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+        };
+      }
+      const links = Array.from(
+        document.querySelectorAll("a, div[role='link'], span")
+      );
+      const el = links.find((n) => {
         const t = (n.innerText || "").trim().toLowerCase();
-        return t === "create" || t === "new post";
+        const al = (n.getAttribute("aria-label") || "").toLowerCase();
+        return (
+          t === "create" ||
+          t === "new post" ||
+          al === "new post" ||
+          al === "create"
+        );
       });
-      if (!el) return false;
-      el.click();
-      return true;
+      if (!el) return null;
+      const clickable =
+        el.closest("a, div[role='link'], div[role='button']") || el;
+      const rect = clickable.getBoundingClientRect();
+      if (rect.width < 2) return null;
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     });
-    if (clicked) {
-      console.log("✅ Create clicked (fallback)");
+
+    if (found) {
+      await page.mouse.click(found.x, found.y, { delay: 50 });
+      console.log("✅ Create clicked");
+      await delay(2000);
       return;
     }
 
@@ -267,8 +280,11 @@ const clickByExactText = async (
         );
 
         for (const el of candidates) {
-          const t = (el.innerText || "").trim().toLowerCase();
-          if (!wantedLabels.includes(t)) continue;
+          const raw = (el.innerText || "").trim().toLowerCase();
+          const first = raw.split("\n")[0].trim();
+          if (!wantedLabels.includes(raw) && !wantedLabels.includes(first)) {
+            continue;
+          }
 
           const clickable = el.closest("button, [role='button'], a") || el;
           const rect = clickable.getBoundingClientRect();
@@ -319,32 +335,54 @@ const clickShare = (page) =>
 
 const pickComposerMode = async (page, videoPost) => {
   const labels = videoPost ? ["reel", "reels", "post"] : ["post"];
-  const picked = await page.evaluate((wanted) => {
-    const roots = Array.from(
-      document.querySelectorAll("[role='dialog'], [role='menu']")
-    );
-    if (!roots.length) return null;
-    const nodes = roots.flatMap((root) =>
-      Array.from(
-        root.querySelectorAll(
-          "[role='menuitem'], [role='menuitem'] span, button, a, span"
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const found = await page.evaluate((wanted) => {
+      const roots = Array.from(
+        document.querySelectorAll("[role='dialog'], [role='menu']")
+      );
+      if (!roots.length) return null;
+      const nodes = roots.flatMap((root) =>
+        Array.from(
+          root.querySelectorAll(
+            "[role='menuitem'], [role='menuitem'] span, button, a, span, div"
+          )
         )
-      )
-    );
-    for (const label of wanted) {
-      const el = nodes.find((n) => (n.innerText || "").trim().toLowerCase() === label);
-      if (!el) continue;
-      const clickable =
-        el.closest("[role='menuitem'], a, button, [role='button']") || el;
-      clickable.click();
-      return label;
+      );
+      for (const label of wanted) {
+        const el = nodes.find((n) => {
+          const raw = (n.innerText || "").trim().toLowerCase();
+          const first = raw.split("\n")[0].trim();
+          return (
+            first === label ||
+            raw === label ||
+            raw.startsWith(`${label}\n`) ||
+            raw.startsWith(`${label} `)
+          );
+        });
+        if (!el) continue;
+        const clickable =
+          el.closest("[role='menuitem'], a, button, [role='button']") || el;
+        const rect = clickable.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) continue;
+        return {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+          label,
+        };
+      }
+      return null;
+    }, labels);
+
+    if (found) {
+      await page.mouse.click(found.x, found.y, { delay: 50 });
+      console.log(`✅ Composer mode: ${found.label}`);
+      await delay(2500);
+      return found.label;
     }
-    return null;
-  }, labels);
-  if (picked) {
-    console.log(`✅ Composer mode: ${picked}`);
-    await delay(2500);
+    await delay(400);
   }
+  console.log("⏭️ Composer menu not shown — trying upload on current screen");
+  return null;
 };
 
 const waitForUploadUi = async (page, videoPost) => {
@@ -491,23 +529,29 @@ const postOnce = async (caption, imageInputs) => {
     browser = await puppeteer.launch({
       headless: !isHeaded(),
       ...browserOpts,
-      defaultViewport: { width: 1366, height: 768 },
+      defaultViewport: { width: 1400, height: 900 },
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
-        "--window-size=1366,768",
+        "--window-size=1400,1000",
+        "--window-position=0,0",
+        "--disable-session-crashed-bubble",
+        "--hide-crash-restore-bubble",
+        "--disable-infobars",
+        "--noerrdialogs",
       ],
       userDataDir: SESSION_DIR,
     });
     assertEdgeProcess(browser);
 
     const page = await browser.newPage();
+    await page.setViewport({ width: 1400, height: 900 });
     await page.setUserAgent(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
     );
 
-    await page.goto("https://www.instagram.com/", {
+    await page.goto("https://www.instagram.com/?hl=en", {
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
@@ -559,7 +603,7 @@ const postOnce = async (caption, imageInputs) => {
       await delay(4000);
     }
 
-    await page.waitForSelector("input[type='file']", { timeout: 20000 });
+    await page.waitForSelector("input[type='file']", { timeout: 40000 });
     const fileInput = await page.$("input[type='file']");
     const uploadFiles = videoPost ? imagePaths.slice(0, 1) : imagePaths;
     await fileInput.uploadFile(...uploadFiles);

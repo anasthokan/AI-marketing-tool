@@ -51,7 +51,10 @@ export const startScheduler = () => {
       if (!retriedLegacyVideo) {
         retriedLegacyVideo = true;
         const reset = await Post.updateMany(
-          { source: "video", lastPostOk: { $exists: false } },
+          {
+            source: "video",
+            $or: [{ lastPostOk: { $exists: false } }, { lastPostOk: false }],
+          },
           {
             $set: {
               posted: false,
