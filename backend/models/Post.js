@@ -18,6 +18,8 @@ const postSchema = new mongoose.Schema({
   postsPerDay: { type: Number, default: 1 },
   lastPostedDate: { type: String, default: null },
   posted: { type: Boolean, default: false },
+  lastPostOk: Boolean,
+  lastPostError: String,
   createdAt: { type: Date, default: Date.now },
 });
 

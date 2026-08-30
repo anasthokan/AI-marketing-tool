@@ -39,3 +39,12 @@ export const saveMediaFile = async (input, destPath) => {
   }
   return destPath;
 };
+
+/** Use an existing disk file as-is (do not copy/delete originals under uploads/). */
+export const resolveUploadPath = (input) => {
+  if (!input || typeof input !== "string") return null;
+  if (input.startsWith("data:") || /^https?:\/\//i.test(input)) return null;
+  const src = path.resolve(input);
+  if (!fs.existsSync(src)) return null;
+  return src;
+};

@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { saveImage } from "../utils/saveImage.js";
-import { isVideoMedia, saveMediaFile } from "../utils/media.js";
+import { isVideoMedia, saveMediaFile, resolveUploadPath } from "../utils/media.js";
 import { createMutex } from "../utils/mutex.js";
 import { resolveIgBrowserLaunch, assertEdgeProcess } from "../utils/igBrowser.js";
 
@@ -312,18 +312,89 @@ const clickByExactText = async (
 };
 
 const clickNext = (page, opts) =>
-  clickByExactText(page, ["next", "ok", "continue"], "Next", opts);
+  clickByExactText(page, ["next", "ok", "continue", "done"], "Next", opts);
 
 const clickShare = (page) =>
-  clickByExactText(page, ["share", "post"], "Share");
+  clickByExactText(page, ["share", "post", "share now"], "Share");
+
+const pickComposerMode = async (page, videoPost) => {
+  const labels = videoPost ? ["reel", "reels", "post"] : ["post"];
+  const picked = await page.evaluate((wanted) => {
+    const roots = Array.from(
+      document.querySelectorAll("[role='dialog'], [role='menu']")
+    );
+    if (!roots.length) return null;
+    const nodes = roots.flatMap((root) =>
+      Array.from(
+        root.querySelectorAll(
+          "[role='menuitem'], [role='menuitem'] span, button, a, span"
+        )
+      )
+    );
+    for (const label of wanted) {
+      const el = nodes.find((n) => (n.innerText || "").trim().toLowerCase() === label);
+      if (!el) continue;
+      const clickable =
+        el.closest("[role='menuitem'], a, button, [role='button']") || el;
+      clickable.click();
+      return label;
+    }
+    return null;
+  }, labels);
+  if (picked) {
+    console.log(`✅ Composer mode: ${picked}`);
+    await delay(2500);
+  }
+};
+
+const waitForUploadUi = async (page, videoPost) => {
+  const timeout = videoPost ? 180000 : 40000;
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const state = await page.evaluate(() => {
+      const dialog = document.querySelector("div[role='dialog']") || document.body;
+      const t = (dialog.innerText || "").toLowerCase();
+      if (
+        t.includes("couldn't upload") ||
+        t.includes("couldn’t upload") ||
+        t.includes("something went wrong") ||
+        t.includes("failed to upload") ||
+        t.includes("video is too")
+      ) {
+        return "error";
+      }
+      const labels = Array.from(
+        dialog.querySelectorAll("button, [role='button'], div, span")
+      ).map((n) => (n.innerText || "").trim().toLowerCase());
+      const hasAction = labels.some((x) =>
+        ["next", "ok", "continue", "done", "share", "post"].includes(x)
+      );
+      if (
+        t.includes("processing") ||
+        t.includes("uploading") ||
+        t.includes("please wait")
+      ) {
+        return "busy";
+      }
+      if (hasAction) return "ready";
+      return "wait";
+    });
+    if (state === "error") {
+      throw new Error("Instagram rejected the video upload");
+    }
+    if (state === "ready") return;
+    await delay(2000);
+  }
+};
 
 /**
  * Instagram crop → filters → caption. Advance until caption/share UI appears.
  */
-const advanceToCaption = async (page) => {
+const advanceToCaption = async (page, extraSteps = 0) => {
   await logDialogStep(page);
 
-  for (let step = 1; step <= 4; step++) {
+  const max = 4 + extraSteps;
+  for (let step = 1; step <= max; step++) {
     if (await onCaptionScreen(page)) {
       console.log(`✅ Caption screen ready (before Next #${step})`);
       return;
@@ -331,7 +402,7 @@ const advanceToCaption = async (page) => {
 
     const required = step <= 2;
     const clicked = await clickNext(page, { required });
-    await delay(6000);
+    await delay(videoWait(step));
     await logDialogStep(page);
 
     if (await onCaptionScreen(page)) {
@@ -348,16 +419,22 @@ const advanceToCaption = async (page) => {
   throw new Error("❌ Caption screen not reached after Next steps");
 };
 
+const videoWait = (step) => (step <= 2 ? 8000 : 5000);
+
 /** Confirm Instagram actually finished publishing (not just Share click). */
-const waitForPostShared = async (page) => {
+const waitForPostShared = async (page, videoPost) => {
   const phrases = [
     "your post has been shared",
     "post shared",
     "reel shared",
     "your reel has been shared",
+    "your reel is shared",
+    "shared to reels",
+    "reel is now shared",
   ];
 
-  const deadline = Date.now() + 90000;
+  const deadline = Date.now() + (videoPost ? 180000 : 90000);
+  const started = Date.now();
   while (Date.now() < deadline) {
     const ok = await page.evaluate((list) => {
       const text = (document.body?.innerText || "").toLowerCase();
@@ -367,6 +444,16 @@ const waitForPostShared = async (page) => {
     if (ok) {
       console.log("🚀 POST CONFIRMED — Instagram shared successfully");
       return true;
+    }
+
+    if (videoPost && Date.now() - started > 20000) {
+      const dialogGone = await page.evaluate(
+        () => !document.querySelector("div[role='dialog']")
+      );
+      if (dialogGone) {
+        console.log("🚀 POST CONFIRMED — Instagram composer closed after share");
+        return true;
+      }
     }
     await delay(2000);
   }
@@ -439,9 +526,14 @@ const postOnce = async (caption, imageInputs) => {
         .substring(7)}`;
 
       if (isVideoMedia(media[i])) {
-        const vidPath = path.resolve(`temp_${uniqueName}.mp4`);
-        const saved = await saveMediaFile(media[i], vidPath);
-        if (saved) imagePaths.push(saved);
+        const existing = resolveUploadPath(media[i]);
+        if (existing) {
+          imagePaths.push(existing);
+        } else {
+          const vidPath = path.resolve(`temp_${uniqueName}.mp4`);
+          const saved = await saveMediaFile(media[i], vidPath);
+          if (saved) imagePaths.push(saved);
+        }
       } else {
         const imgPath = path.resolve(`temp_${uniqueName}.png`);
         const saved = await saveImage(media[i], imgPath);
@@ -456,7 +548,9 @@ const postOnce = async (caption, imageInputs) => {
     }
 
     await clickCreate(page);
-    await delay(5000);
+    await delay(3000);
+    await pickComposerMode(page, videoPost);
+    await delay(videoPost ? 2000 : 2000);
 
     if (!videoPost && imagePaths.length > 1) {
       console.log("🟢 Enabling carousel mode...");
@@ -472,20 +566,9 @@ const postOnce = async (caption, imageInputs) => {
     await page.keyboard.up("Shift");
     console.log(videoPost ? "✅ Video uploaded" : "✅ Images uploaded");
 
-    await delay(videoPost ? 12000 : 5000);
+    await waitForUploadUi(page, videoPost);
 
-    // Wait until crop/Next UI is ready after upload
-    await page.waitForFunction(
-      () => {
-        const dialog = document.querySelector("div[role='dialog']");
-        if (!dialog) return false;
-        const text = (dialog.innerText || "").toLowerCase();
-        return text.includes("next") || text.includes("crop") || text.includes("reel") || text.includes("video");
-      },
-      { timeout: 30000 }
-    ).catch(() => {});
-
-    await advanceToCaption(page);
+    await advanceToCaption(page, videoPost ? 3 : 0);
 
     const box = await findCaptionBox(page);
     if (!box) {
@@ -501,7 +584,7 @@ const postOnce = async (caption, imageInputs) => {
     await delay(3000);
     await clickShare(page);
 
-    const confirmed = await waitForPostShared(page);
+    const confirmed = await waitForPostShared(page, videoPost);
     if (!confirmed) {
       throw new Error(
         "Share was clicked but Instagram did not confirm the post. Session may be expired — run npm run ig:login on the server."
@@ -516,7 +599,10 @@ const postOnce = async (caption, imageInputs) => {
   } finally {
     for (const file of imagePaths) {
       try {
-        fs.unlinkSync(file);
+        const base = path.basename(file);
+        if (base.startsWith("temp_") || base.startsWith("fb_")) {
+          fs.unlinkSync(file);
+        }
       } catch {}
     }
     if (browser) {

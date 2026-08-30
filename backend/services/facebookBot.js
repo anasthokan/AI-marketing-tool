@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { saveImage } from "../utils/saveImage.js";
-import { isVideoMedia, saveMediaFile } from "../utils/media.js";
+import { isVideoMedia, saveMediaFile, resolveUploadPath } from "../utils/media.js";
 import { createMutex } from "../utils/mutex.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -175,9 +175,14 @@ const postOnce = async (caption, imageInputs) => {
 
       for (let i = 0; i < imageInputs.length; i++) {
         if (isVideoMedia(imageInputs[i])) {
-          const vidPath = path.resolve(`fb_${Date.now()}_${i}.mp4`);
-          const saved = await saveMediaFile(imageInputs[i], vidPath);
-          if (saved) imagePaths.push(saved);
+          const existing = resolveUploadPath(imageInputs[i]);
+          if (existing) {
+            imagePaths.push(existing);
+          } else {
+            const vidPath = path.resolve(`fb_${Date.now()}_${i}.mp4`);
+            const saved = await saveMediaFile(imageInputs[i], vidPath);
+            if (saved) imagePaths.push(saved);
+          }
         } else {
           const imgPath = path.resolve(`fb_${Date.now()}_${i}.png`);
           const saved = await saveImage(imageInputs[i], imgPath);
@@ -189,7 +194,39 @@ const postOnce = async (caption, imageInputs) => {
         throw new Error("Failed to prepare any Facebook media");
       }
 
-      let fileInput = await page.$("[role='dialog'] input[type='file']");
+      await page.evaluate(() => {
+        const dialog = document.querySelector("[role='dialog']");
+        if (!dialog) return;
+        const nodes = Array.from(
+          dialog.querySelectorAll("[aria-label], div[role='button'], span")
+        );
+        for (const el of nodes) {
+          const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+          const text = (el.innerText || "").trim().toLowerCase();
+          if (
+            aria.includes("photo/video") ||
+            aria.includes("photo / video") ||
+            text === "photo/video" ||
+            text.includes("photo/video")
+          ) {
+            (el.closest("[role='button']") || el).click();
+            return;
+          }
+        }
+      });
+      await delay(2000);
+
+      const fileInputs = await page.$$("[role='dialog'] input[type='file']");
+      let fileInput = null;
+      for (const input of fileInputs) {
+        const accept = await page.evaluate((el) => el.accept || "", input);
+        if (videoPost && /video/i.test(accept)) {
+          fileInput = input;
+          break;
+        }
+        if (!fileInput) fileInput = input;
+      }
+
       if (!fileInput) {
         await page.evaluate((accept) => {
           const dialog = document.querySelector("[role='dialog']");
@@ -198,19 +235,49 @@ const postOnce = async (caption, imageInputs) => {
           if (!input) {
             input = document.createElement("input");
             input.type = "file";
-            input.accept = accept;
             input.multiple = true;
             input.style.display = "none";
             dialog.appendChild(input);
           }
-        }, videoPost ? "video/*,image/*" : "image/*");
+          input.accept = accept;
+        }, videoPost ? "video/mp4,video/*,image/*" : "image/*");
         fileInput = await page.$("[role='dialog'] input[type='file']");
+      } else if (videoPost) {
+        await page.evaluate((el) => {
+          el.accept = "video/mp4,video/*,image/*";
+        }, fileInput);
       }
 
       if (!fileInput) throw new Error("Facebook file input not found");
-      await fileInput.uploadFile(...(videoPost ? imagePaths.slice(0, 1) : imagePaths));
+      await fileInput.uploadFile(
+        ...(videoPost ? imagePaths.slice(0, 1) : imagePaths)
+      );
       console.log(videoPost ? "Video uploaded" : "Images uploaded");
-      await delay(videoPost ? 15000 : 5000);
+
+      const readyTimeout = videoPost ? 180000 : 25000;
+      await page.waitForFunction(
+        (isVideo) => {
+          const dialog = document.querySelector("[role='dialog']");
+          if (!dialog) return false;
+          const t = (dialog.innerText || "").toLowerCase();
+          if (t.includes("couldn't") || t.includes("something went wrong")) {
+            return true;
+          }
+          if (t.includes("uploading") || t.includes("processing")) return false;
+          const btn = dialog.querySelector(
+            "[aria-label='Post'], [aria-label='Post'] div, div[aria-label='Post']"
+          );
+          if (!btn) return false;
+          if (btn.getAttribute("aria-disabled") === "true") return false;
+          if (!isVideo) return true;
+          return Boolean(
+            dialog.querySelector("video, img[src*='scontent'], img[src*='fbcdn']")
+          );
+        },
+        { timeout: readyTimeout },
+        videoPost
+      ).catch(() => {});
+      await delay(videoPost ? 4000 : 1500);
     }
 
     const postBtn = await page.waitForSelector(
@@ -228,7 +295,7 @@ const postOnce = async (caption, imageInputs) => {
     console.log("Post clicked");
 
     await page.waitForFunction(() => !document.querySelector("[role='dialog']"), {
-      timeout: 90000,
+      timeout: 180000,
     });
 
     console.log("Facebook post done");
@@ -240,7 +307,10 @@ const postOnce = async (caption, imageInputs) => {
   } finally {
     for (const file of imagePaths) {
       try {
-        fs.unlinkSync(file);
+        const base = path.basename(file);
+        if (base.startsWith("temp_") || base.startsWith("fb_")) {
+          fs.unlinkSync(file);
+        }
       } catch {}
     }
     if (browser) {
