@@ -578,7 +578,7 @@ const buildLocalVideo = async (data, workDir) => {
   const duration = targetSec;
   console.log(`🔊 Target duration: ${duration}s`);
 
-  const clipCount = Math.min(10, Math.max(3, Math.round(duration / 5)));
+  const clipCount = Math.min(6, Math.max(3, Math.round(duration / 8)));
   const clipDuration = duration / clipCount;
   const terms = extractSearchTerms(topic, script);
 

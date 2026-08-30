@@ -2,6 +2,7 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import mongoose from "mongoose";
+import { randomUUID } from "crypto";
 import { generatePost } from "../services/aiService.js";
 import { generateShortVideo } from "../services/videoService.js";
 import { getFfmpegPath } from "../utils/ffmpeg.js";
@@ -199,9 +200,6 @@ router.post("/generate", async (req, res) => {
 });
 
 router.post("/generate-video", async (req, res) => {
-  req.setTimeout(600000);
-  res.setTimeout(600000);
-
   try {
     const form = req.body;
     const topic = String(form.topic || form.videoSubject || "").trim();
@@ -215,75 +213,92 @@ router.post("/generate-video", async (req, res) => {
     const platforms = Array.isArray(form.platform) ? form.platform : [];
     const postsPerDay = Math.min(Math.max(Number(form.postsPerDay) || 1, 1), 3);
     const scheduledTime = normalizeTime(form.scheduledTime || "");
-
     const targetSec = Math.min(
       60,
       Math.max(10, Math.round(Number(form.duration) || 15))
     );
+    const jobId = String(form.jobId || "").trim() || randomUUID();
 
-    const jobId = String(form.jobId || "").trim();
-    if (jobId) {
-      createVideoJob(jobId);
-      updateVideoJob(jobId, {
-        progress: 3,
-        stage: "script",
-        label: "Starting…",
-        status: "running",
-      });
-    }
-
-    console.log("VIDEO GENERATE:", { topic, targetSec, platforms, scheduledTime, jobId });
-    const result = await generateShortVideo({
-      ...form,
-      topic,
-      duration: targetSec,
-      postsPerDay,
-      onProgress: (progress, stage, label) => {
-        if (!jobId) return;
-        updateVideoJob(jobId, { progress, stage, label, status: "running" });
-      },
+    createVideoJob(jobId);
+    updateVideoJob(jobId, {
+      progress: 3,
+      stage: "script",
+      label: "Starting…",
+      status: "running",
     });
 
-    if (jobId) {
-      updateVideoJob(jobId, {
-        progress: 100,
-        stage: "finish",
-        label: "Video ready",
-        status: "done",
-      });
-    }
+    console.log("VIDEO GENERATE (async):", {
+      topic,
+      targetSec,
+      platforms,
+      scheduledTime,
+      jobId,
+    });
 
-    const diskVideo = result.video || (result.videos && result.videos[0]) || null;
-    const previewVideo = diskVideo ? toPreviewUrl(diskVideo) : null;
-
+    // Return immediately so IIS/ARR does not 502 on a 5–10 min render.
     res.json({
       success: true,
-      text: result.text,
-      script: result.script,
-      video: previewVideo,
-      videos: previewVideo ? [previewVideo] : [],
-      images: [],
-      cta: result.cta || null,
-      mode: "video",
-      duration: targetSec,
-      postsPerDay,
-      scheduledTime: scheduledTime || null,
-      platforms,
-      posting: {},
-      saved: false,
-      needsConfirm: true,
-      message: `Preview ready (${targetSec}s). Watch the video, then confirm if you want to post.`,
+      jobId,
+      status: "running",
+      message: "Video generation started",
+    });
+
+    setImmediate(async () => {
+      try {
+        const result = await generateShortVideo({
+          ...form,
+          topic,
+          duration: targetSec,
+          postsPerDay,
+          onProgress: (progress, stage, label) => {
+            updateVideoJob(jobId, {
+              progress,
+              stage,
+              label,
+              status: "running",
+            });
+          },
+        });
+
+        const diskVideo =
+          result.video || (result.videos && result.videos[0]) || null;
+        const previewVideo = diskVideo ? toPreviewUrl(diskVideo) : null;
+        updateVideoJob(jobId, {
+          progress: 100,
+          stage: "finish",
+          label: "Video ready",
+          status: "done",
+          result: {
+            success: true,
+            text: result.text,
+            script: result.script,
+            video: previewVideo,
+            videos: previewVideo ? [previewVideo] : [],
+            images: [],
+            cta: result.cta || null,
+            mode: "video",
+            duration: targetSec,
+            postsPerDay,
+            scheduledTime: scheduledTime || null,
+            platforms,
+            posting: {},
+            saved: false,
+            needsConfirm: true,
+            message: `Preview ready (${targetSec}s). Watch the video, then confirm if you want to post.`,
+          },
+        });
+      } catch (err) {
+        console.error("VIDEO JOB FAILED:", err);
+        updateVideoJob(jobId, {
+          status: "error",
+          label: err.message,
+          stage: "finish",
+          error: err.message,
+        });
+      }
     });
   } catch (err) {
     console.error(err);
-    const failedJob = String(req.body?.jobId || "").trim();
-    if (failedJob) {
-      updateVideoJob(failedJob, {
-        status: "error",
-        label: err.message,
-        stage: "finish",
-      });
-    }
     res.status(500).json({
       success: false,
       error: err.message,

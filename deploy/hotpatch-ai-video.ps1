@@ -1,6 +1,7 @@
 # Run ON THE SERVER (RDP). Pulls AI Video backend files from GitHub, installs
-# ffmpeg/TTS packages, restarts PM2. Use this when the live site shows the new
-# UI but /api/generate-video returns 404.
+# ffmpeg/TTS packages, restarts PM2.
+# Use this when /api/generate-video is 404 or 502 (long IIS proxy timeout).
+# Frontend still needs a full deploy.ps1 build for the polling UI.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\hotpatch-ai-video.ps1
 

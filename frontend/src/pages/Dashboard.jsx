@@ -86,6 +86,8 @@ export default function Dashboard() {
   const [videoDraft, setVideoDraft] = useState(null);
   const [confirming, setConfirming] = useState(false);
   const [videoProgress, setVideoProgress] = useState(null);
+  const [captionMode, setCaptionMode] = useState("auto"); // "auto" | "manual"
+  const [videoCaptionManual, setVideoCaptionManual] = useState("");
 
   const [text, setText] = useState("");
   const [images, setImages] = useState([]);
@@ -132,6 +134,8 @@ export default function Dashboard() {
     setVideoUrl("");
     setVideoDraft(null);
     setVideoProgress(null);
+    setCaptionMode("auto");
+    setVideoCaptionManual("");
   }, [location.pathname]);
 
   const handleManualImages = async (e) => {
@@ -314,6 +318,8 @@ export default function Dashboard() {
       setCta(null);
       setVideoUrl("");
       setVideoDraft(null);
+      setCaptionMode("auto");
+      setVideoCaptionManual("");
       const jobId =
         typeof crypto !== "undefined" && crypto.randomUUID
           ? crypto.randomUUID()
@@ -325,60 +331,73 @@ export default function Dashboard() {
         status: "running",
       });
 
-      const poll = setInterval(async () => {
-        try {
-          const { data } = await axios.get(
-            `${apiBase()}/api/video-progress/${jobId}`,
-            { timeout: 4000 }
-          );
-          if (data) setVideoProgress(data);
-        } catch {
-          /* keep last known progress */
-        }
-      }, 700);
+      const started = await axios.post(
+        `${apiBase()}/api/generate-video`,
+        {
+          jobId,
+          topic: videoTopic.trim(),
+          script: videoScript.trim(),
+          language: videoLanguage,
+          voice: videoVoice,
+          aspect: videoAspect,
+          duration: videoDuration,
+          company: form.company,
+          industry: form.industry,
+          website: form.website,
+          inquiryUrl: form.inquiryUrl,
+          whatsapp: form.whatsapp,
+          audience: form.audience,
+          country: form.country,
+        },
+        { timeout: 30000 }
+      );
+      const runningId = started.data?.jobId || jobId;
 
-      try {
-        const res = await axios.post(
-          `${apiBase()}/api/generate-video`,
-          {
-            jobId,
-            topic: videoTopic.trim(),
-            script: videoScript.trim(),
-            language: videoLanguage,
-            voice: videoVoice,
-            aspect: videoAspect,
-            duration: videoDuration,
-            company: form.company,
-            industry: form.industry,
-            website: form.website,
-            inquiryUrl: form.inquiryUrl,
-            whatsapp: form.whatsapp,
-            audience: form.audience,
-            country: form.country,
-          },
-          { timeout: 600000 }
-        );
-        setVideoProgress({
-          progress: 100,
-          stage: "finish",
-          label: "Video ready",
-          status: "done",
-        });
-        applyResponse(res);
-        const preview =
-          res.data.video ||
-          (Array.isArray(res.data.videos) ? res.data.videos[0] : "");
-        if (preview) {
-          const resolved =
-            preview.startsWith("/uploads/") ? `${apiBase()}${preview}` : preview;
-          setVideoUrl(resolved);
-          setVideoDraft({
-            video: preview,
-            text: res.data.text || "",
-          });
+      const deadline = Date.now() + 15 * 60 * 1000;
+      let payload = null;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 1000));
+        let data = null;
+        try {
+          const poll = await axios.get(
+            `${apiBase()}/api/video-progress/${runningId}`,
+            { timeout: 8000 }
+          );
+          data = poll.data;
+        } catch {
+          continue;
         }
-      } finally {
-        clearInterval(poll);
+        if (data) setVideoProgress(data);
+        if (data?.status === "done" && data.result) {
+          payload = data.result;
+          break;
+        }
+        if (data?.status === "error") {
+          throw new Error(data.error || data.label || "Video generation failed");
+        }
+      }
+      if (!payload) {
+        throw new Error("Video generation timed out. Try a shorter duration.");
+      }
+
+      setVideoProgress({
+        progress: 100,
+        stage: "finish",
+        label: "Video ready",
+        status: "done",
+      });
+      applyResponse({ data: payload });
+      const preview =
+        payload.video ||
+        (Array.isArray(payload.videos) ? payload.videos[0] : "");
+      if (preview) {
+        const resolved =
+          preview.startsWith("/uploads/") ? `${apiBase()}${preview}` : preview;
+        setVideoUrl(resolved);
+        setVideoDraft({
+          video: preview,
+          text: payload.text || "",
+        });
       }
     } catch (err) {
       console.log(err);
@@ -407,12 +426,25 @@ export default function Dashboard() {
       }
       if (!validateCommon()) return;
 
+      const caption =
+        captionMode === "manual"
+          ? videoCaptionManual.trim()
+          : String(videoDraft.text || text || "").trim();
+      if (!caption) {
+        alert(
+          captionMode === "manual"
+            ? "Please type a caption"
+            : "Generated caption is missing"
+        );
+        return;
+      }
+
       setConfirming(true);
       const res = await axios.post(
         `${apiBase()}/api/confirm-video`,
         {
           video: videoDraft.video,
-          text: videoDraft.text || text,
+          text: caption,
           company: form.company,
           industry: form.industry,
           website: form.website,
@@ -561,14 +593,10 @@ export default function Dashboard() {
 
   const previewBlock = (
     <>
-      {text && (
+      {text && activeTab !== "video" && (
         <div className="mt-4">
           <h5>
-            {activeTab === "manual"
-              ? "📝 Caption"
-              : activeTab === "video"
-                ? "📝 Video caption"
-                : "📝 Generated Post"}
+            {activeTab === "manual" ? "📝 Caption" : "📝 Generated Post"}
           </h5>
           <div
             className="bg-light p-3 rounded"
@@ -576,6 +604,56 @@ export default function Dashboard() {
           >
             {text}
           </div>
+        </div>
+      )}
+
+      {(text || videoDraft) && activeTab === "video" && (
+        <div className="mt-4">
+          <h5>📝 Video caption</h5>
+          <div className="d-flex flex-wrap gap-4 mb-3">
+            <div className="form-check">
+              <input
+                className="form-check-input"
+                type="radio"
+                name="videoCaptionMode"
+                id="captionAuto"
+                checked={captionMode === "auto"}
+                onChange={() => setCaptionMode("auto")}
+              />
+              <label className="form-check-label" htmlFor="captionAuto">
+                Use generated caption
+              </label>
+            </div>
+            <div className="form-check">
+              <input
+                className="form-check-input"
+                type="radio"
+                name="videoCaptionMode"
+                id="captionManual"
+                checked={captionMode === "manual"}
+                onChange={() => setCaptionMode("manual")}
+              />
+              <label className="form-check-label" htmlFor="captionManual">
+                Write my own caption
+              </label>
+            </div>
+          </div>
+          {captionMode === "auto" ? (
+            <div
+              className="bg-light p-3 rounded"
+              style={{ whiteSpace: "pre-wrap" }}
+            >
+              {text || videoDraft?.text || ""}
+            </div>
+          ) : (
+            <textarea
+              className="form-control"
+              rows={6}
+              placeholder="Type or paste the caption to post with this video..."
+              value={videoCaptionManual}
+              onChange={(e) => setVideoCaptionManual(e.target.value)}
+            />
+          )}
         </div>
       )}
 
