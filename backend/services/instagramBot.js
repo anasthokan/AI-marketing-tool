@@ -142,16 +142,71 @@ const enableCarousel = async (page) => {
   }
 };
 
-// ================= CLICK CREATE =================
-const clickCreate = async (page) => {
+const clickLeftNav = async (page, labels, labelName) => {
+  const wanted = labels.map((l) => l.toLowerCase());
+  for (let i = 0; i < 10; i++) {
+    const found = await page.evaluate((wantedLabels) => {
+      const nodes = Array.from(
+        document.querySelectorAll(
+          "a, span, div, button, svg, [role='link'], [role='button'], [role='menuitem']"
+        )
+      );
+      for (const n of nodes) {
+        const raw = (n.innerText || "").trim().toLowerCase();
+        const first = raw.split("\n")[0].trim();
+        const al = (n.getAttribute("aria-label") || "").toLowerCase();
+        const hit = wantedLabels.some((w) => {
+          if (w === "+") {
+            return first === "+" || al === "+" || al === "plus";
+          }
+          return (
+            first === w ||
+            raw === w ||
+            raw === `+ ${w}` ||
+            al === w
+          );
+        });
+        if (!hit) continue;
+        const clickable =
+          n.closest(
+            "a, [role='link'], [role='button'], [role='menuitem'], button"
+          ) || n;
+        const rect = clickable.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) continue;
+        if (rect.left > 420) continue;
+        const style = window.getComputedStyle(clickable);
+        if (style.visibility === "hidden" || style.display === "none") continue;
+        if (Number(style.opacity) === 0) continue;
+        return {
+          x: rect.left + Math.min(rect.width, 48) / 2,
+          y: rect.top + rect.height / 2,
+          label: first || al || wantedLabels[0],
+        };
+      }
+      return null;
+    }, wanted);
+
+    if (found) {
+      await page.mouse.click(found.x, found.y, { delay: 60 });
+      console.log(`✅ ${labelName} clicked`);
+      await delay(1800);
+      return true;
+    }
+    await delay(400);
+  }
+  return false;
+};
+
+const clickPlusIcon = async (page) => {
   for (let i = 0; i < 10; i++) {
     const target = await page.evaluate(() => {
       const sels = [
         "svg[aria-label='New post']",
         "svg[aria-label='New Post']",
-        "svg[aria-label='Create']",
+        "svg[aria-label='Plus']",
+        "svg[aria-label='+']",
         "[aria-label='New post']",
-        "[aria-label='Create']",
+        "[aria-label='Plus']",
       ];
       for (const sel of sels) {
         const el = document.querySelector(sel);
@@ -160,38 +215,29 @@ const clickCreate = async (page) => {
           el.closest("a, div[role='link'], div[role='button'], button") || el;
         const rect = clickable.getBoundingClientRect();
         if (rect.width < 2 || rect.height < 2) continue;
-        if (rect.left > 360) continue;
+        if (rect.left > 420) continue;
         return {
           x: rect.left + rect.width / 2,
           y: rect.top + rect.height / 2,
         };
       }
 
-      const wanted = ["create", "new post"];
       const nodes = Array.from(
         document.querySelectorAll(
-          "a, span, div, button, [role='link'], [role='button'], [role='menuitem']"
+          "a, span, div, button, [role='link'], [role='button']"
         )
       );
       for (const n of nodes) {
-        const raw = (n.innerText || "").trim().toLowerCase();
-        const first = raw.split("\n")[0].replace(/^\+\s*/, "").trim();
-        const al = (n.getAttribute("aria-label") || "").toLowerCase();
-        const hit = wanted.some(
-          (w) => first === w || raw === w || raw === `+ ${w}` || al === w
-        );
-        if (!hit) continue;
+        const raw = (n.innerText || "").trim();
+        const first = raw.split("\n")[0].trim();
+        if (first !== "+") continue;
         const clickable =
-          n.closest(
-            "a, [role='link'], [role='button'], [role='menuitem'], button"
-          ) || n;
+          n.closest("a, [role='link'], [role='button'], button") || n;
         const rect = clickable.getBoundingClientRect();
         if (rect.width < 2 || rect.height < 2) continue;
-        if (rect.left > 360) continue;
-        const style = window.getComputedStyle(clickable);
-        if (style.visibility === "hidden" || style.display === "none") continue;
+        if (rect.left > 420) continue;
         return {
-          x: rect.left + Math.min(rect.width, 48) / 2,
+          x: rect.left + Math.min(rect.width, 40) / 2,
           y: rect.top + rect.height / 2,
         };
       }
@@ -200,16 +246,23 @@ const clickCreate = async (page) => {
 
     if (target) {
       await page.mouse.click(target.x, target.y, { delay: 60 });
-      console.log("✅ Create clicked");
-      await delay(2000);
+      console.log("✅ Plus (+) clicked");
+      await delay(1800);
       return;
     }
-
-    await delay(2000);
+    await delay(500);
   }
 
-  await saveDebugShot(page, "no_create");
-  throw new Error("❌ Create button not found (are you logged in?)");
+  await saveDebugShot(page, "no_plus");
+  throw new Error("❌ Plus (+) icon not found in Instagram sidebar");
+};
+
+const clickCreateMenu = async (page) => {
+  const ok = await clickLeftNav(page, ["create"], "Create");
+  if (!ok) {
+    await saveDebugShot(page, "no_create_menu");
+    throw new Error("❌ Create not found after clicking +");
+  }
 };
 
 const CAPTION_SELECTORS = [
@@ -606,12 +659,12 @@ const postOnce = async (caption, imageInputs) => {
       throw new Error("Failed to prepare any Instagram media");
     }
 
-    await clickCreate(page);
-    await delay(1500);
+    await clickPlusIcon(page);
+    await clickCreateMenu(page);
     let mode = await pickComposerMode(page, videoPost);
     if (!mode) {
-      await clickCreate(page);
-      await delay(1500);
+      await clickPlusIcon(page);
+      await clickCreateMenu(page);
       mode = await pickComposerMode(page, videoPost);
     }
     await delay(1500);
