@@ -137,37 +137,40 @@ const maximizeWindow = async (page) => {
 };
 
 const pasteCaption = async (page, caption) => {
-  const ok = await page.evaluate((text) => {
-    const box =
-      document.querySelector("[role='dialog'] div[role='textbox']") ||
-      document.querySelector("div[role='textbox']");
-    if (!box) return false;
-    box.focus();
-    document.execCommand("selectAll", false, null);
-    const inserted = document.execCommand("insertText", false, text);
-    if (!inserted) {
-      box.textContent = text;
-      box.dispatchEvent(
-        new InputEvent("input", {
-          bubbles: true,
-          data: text,
-          inputType: "insertText",
-        })
-      );
-    }
-    return true;
-  }, caption);
-  if (!ok) throw new Error("Facebook caption box not found");
-  console.log("Caption pasted");
-};
-
-const dismissPopups = async (page) => {
-  for (let i = 0; i < 3; i++) {
-    try {
-      await page.keyboard.press("Escape");
-    } catch {}
-    await delay(250);
+  const box = await page.waitForSelector(
+    "[role='dialog'] [role='textbox'], [role='dialog'] [contenteditable='true']",
+    { timeout: 15000 }
+  );
+  await box.click({ delay: 80 });
+  await delay(400);
+  try {
+    await page.keyboard.insertText(caption);
+  } catch {
+    await page.keyboard.type(caption, { delay: 0 });
   }
+  await delay(500);
+
+  const hasText = await page.evaluate(() => {
+    const el = document.querySelector("[role='dialog'] [role='textbox']");
+    const t = (el?.innerText || "").trim();
+    if (!t) return false;
+    return !/^what's on your mind/i.test(t);
+  });
+  if (!hasText) {
+    console.log("insertText did not stick — typing caption");
+    await box.click({ delay: 50 });
+    await delay(200);
+    await page.keyboard.type(caption, { delay: 1 });
+  }
+
+  // Close hashtag typeahead without closing the composer (Escape would close it).
+  await page.evaluate(() => {
+    const heading = document.querySelector(
+      "[role='dialog'] h2, [role='dialog'] [role='heading']"
+    );
+    if (heading) heading.click();
+  });
+  console.log("Caption entered");
 };
 
 const scrollComposerToPost = async (page) => {
@@ -228,7 +231,6 @@ const clickFacebookPostButton = async (page) => {
 };
 
 const submitFacebookPost = async (page) => {
-  await dismissPopups(page);
   await scrollComposerToPost(page);
   await delay(400);
 
@@ -386,35 +388,35 @@ const postOnce = async (caption, imageInputs) => {
       );
       console.log(videoPost ? "Video uploaded" : "Images uploaded");
 
-      const readyTimeout = videoPost ? 180000 : 25000;
       await page.waitForFunction(
-        (isVideo) => {
+        () => {
           const dialog = document.querySelector("[role='dialog']");
           if (!dialog) return false;
           const t = (dialog.innerText || "").toLowerCase();
-          if (t.includes("couldn't") || t.includes("something went wrong")) {
+          if (
+            t.includes("couldn't upload") ||
+            t.includes("something went wrong")
+          ) {
             return true;
           }
           if (t.includes("uploading") || t.includes("processing")) return false;
-          const btn = dialog.querySelector(
-            "[aria-label='Post'], [aria-label='Post'] div, div[aria-label='Post']"
-          );
-          if (!btn) return false;
-          if (btn.getAttribute("aria-disabled") === "true") return false;
-          if (!isVideo) return true;
           return Boolean(
-            dialog.querySelector("video, img[src*='scontent'], img[src*='fbcdn']")
+            dialog.querySelector("video") ||
+              dialog.querySelector("[aria-label='Edit']") ||
+              dialog.querySelector("svg[aria-label='Play']") ||
+              dialog.querySelector("[aria-label='Play']") ||
+              dialog.querySelector("img[src*='scontent']")
           );
         },
-        { timeout: readyTimeout },
-        videoPost
-      ).catch(() => {});
-      await delay(videoPost ? 4000 : 1500);
+        { timeout: videoPost ? 45000 : 20000 }
+      ).catch(() => {
+        console.log("Media ready wait timed out — continuing");
+      });
+      await delay(1500);
     }
 
     await pasteCaption(page, caption);
-    await delay(800);
-    await dismissPopups(page);
+    await delay(500);
 
     const posted = await submitFacebookPost(page);
     if (!posted) {
