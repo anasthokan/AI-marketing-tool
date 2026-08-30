@@ -173,7 +173,31 @@ const pasteCaption = async (page, caption) => {
   console.log("Caption entered");
 };
 
+const shrinkComposerMedia = async (page) => {
+  await page.evaluate(() => {
+    const dialog = document.querySelector("[role='dialog']");
+    if (!dialog) return 0;
+    let n = 0;
+    const boxes = [...dialog.querySelectorAll("div")].filter((el) => {
+      const r = el.getBoundingClientRect();
+      return r.height > 240 && r.width > 180 && r.width < 720;
+    });
+    for (const el of boxes) {
+      el.style.maxHeight = "220px";
+      el.style.height = "220px";
+      el.style.overflow = "hidden";
+      n += 1;
+    }
+    for (const vid of dialog.querySelectorAll("video, img")) {
+      vid.style.maxHeight = "220px";
+      vid.style.objectFit = "contain";
+    }
+    return n;
+  });
+};
+
 const scrollComposerToPost = async (page) => {
+  await shrinkComposerMedia(page);
   await page.evaluate(() => {
     const dialog = document.querySelector("[role='dialog']");
     if (!dialog) return;
@@ -413,6 +437,7 @@ const postOnce = async (caption, imageInputs) => {
         console.log("Media ready wait timed out — continuing");
       });
       await delay(1500);
+      await shrinkComposerMedia(page);
     }
 
     await pasteCaption(page, caption);

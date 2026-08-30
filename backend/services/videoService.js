@@ -65,7 +65,28 @@ const looksLikeArabic = (text) => {
 };
 
 const sizeForAspect = (aspect) =>
-  aspect === "16:9" ? { width: 1920, height: 1080 } : { width: 1080, height: 1920 };
+  aspect === "16:9" ? { width: 1280, height: 720 } : { width: 720, height: 1280 };
+
+const H264_COMPAT = [
+  "-c:v",
+  "libx264",
+  "-pix_fmt",
+  "yuv420p",
+  "-preset",
+  "veryfast",
+  "-profile:v",
+  "main",
+  "-level",
+  "4.0",
+  "-crf",
+  "23",
+  "-maxrate",
+  "2M",
+  "-bufsize",
+  "4M",
+  "-movflags",
+  "+faststart",
+];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -347,12 +368,7 @@ const makeColorClip = async (outPath, duration, width, height) => {
         duration.toFixed(3),
         "-r",
         "24",
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-preset",
-        "veryfast",
+        ...H264_COMPAT,
         "-an",
       ])
       .output(outPath);
@@ -370,12 +386,7 @@ const makeStillClip = async (imagePath, outPath, duration, width, height) => {
         duration.toFixed(3),
         "-vf",
         `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=24,fade=t=in:st=0:d=0.3,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=0.3`,
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-preset",
-        "veryfast",
+        ...H264_COMPAT,
         "-an",
       ])
       .output(outPath);
@@ -393,12 +404,7 @@ const makeVideoClip = async (srcPath, outPath, duration, width, height) => {
         duration.toFixed(3),
         "-vf",
         `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=24,fade=t=in:st=0:d=0.25,fade=t=out:st=${fadeOutStart.toFixed(3)}:d=0.25`,
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-preset",
-        "veryfast",
+        ...H264_COMPAT,
         "-an",
       ])
       .output(outPath);
@@ -425,12 +431,7 @@ const concatClips = async (clipPaths, listPath, outPath) => {
         .input(listPath)
         .inputOptions(["-f", "concat", "-safe", "0"])
         .outputOptions([
-          "-c:v",
-          "libx264",
-          "-pix_fmt",
-          "yuv420p",
-          "-preset",
-          "veryfast",
+          ...H264_COMPAT,
           "-an",
         ])
         .output(outPath);
@@ -524,17 +525,10 @@ const burnSubtitles = async (videoPath, srtPath, outPath) => {
       .input(videoPath)
       .outputOptions([
         "-vf",
-        `subtitles='${escaped}':force_style='FontName=Arial,Fontsize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=90'`,
+        `subtitles='${escaped}':force_style='FontName=Arial,Fontsize=16,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=60'`,
         "-c:a",
         "copy",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
+        ...H264_COMPAT,
       ])
       .output(outPath);
   });
