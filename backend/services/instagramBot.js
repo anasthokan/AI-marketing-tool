@@ -174,6 +174,12 @@ const clickLeftNav = async (page, labels, labelName) => {
         const rect = clickable.getBoundingClientRect();
         if (rect.width < 2 || rect.height < 2) continue;
         if (rect.left > 420) continue;
+        const navHref = (
+          clickable.closest("a")?.getAttribute("href") || ""
+        ).toLowerCase();
+        if (/\/reels\/?(\?|$)/.test(navHref) || navHref.includes("/direct/")) {
+          continue;
+        }
         const style = window.getComputedStyle(clickable);
         if (style.visibility === "hidden" || style.display === "none") continue;
         if (Number(style.opacity) === 0) continue;
@@ -216,6 +222,10 @@ const clickPlusIcon = async (page) => {
         const rect = clickable.getBoundingClientRect();
         if (rect.width < 2 || rect.height < 2) continue;
         if (rect.left > 420) continue;
+        const navHref = (
+          clickable.closest("a")?.getAttribute("href") || ""
+        ).toLowerCase();
+        if (/\/reels\/?(\?|$)/.test(navHref)) continue;
         return {
           x: rect.left + rect.width / 2,
           y: rect.top + rect.height / 2,
@@ -236,6 +246,10 @@ const clickPlusIcon = async (page) => {
         const rect = clickable.getBoundingClientRect();
         if (rect.width < 2 || rect.height < 2) continue;
         if (rect.left > 420) continue;
+        const navHref = (
+          clickable.closest("a")?.getAttribute("href") || ""
+        ).toLowerCase();
+        if (/\/reels\/?(\?|$)/.test(navHref)) continue;
         return {
           x: rect.left + Math.min(rect.width, 40) / 2,
           y: rect.top + rect.height / 2,
@@ -402,11 +416,22 @@ const clickShare = (page) =>
   clickByExactText(page, ["share", "post", "share now"], "Share");
 
 const pickComposerMode = async (page, videoPost) => {
-  // Current Instagram Create flyout is a left-sidebar popover, not always role=dialog.
-  // Video can go out as Post (photo/video) or Reel — click whichever is visible.
-  const labels = videoPost ? ["post", "reel", "reels"] : ["post"];
+  // Only the Create flyout "Post" — never the sidebar "Reels" feed link.
+  const labels = ["post"];
   for (let attempt = 0; attempt < 12; attempt++) {
     const found = await page.evaluate((wanted) => {
+      const isFeedNav = (el) => {
+        const a = el.closest("a");
+        const href = (a?.getAttribute("href") || "").toLowerCase();
+        if (href.includes("/create")) return false;
+        return (
+          /\/reels\/?(\?|$)/.test(href) ||
+          href.includes("/direct/") ||
+          href.includes("/explore") ||
+          href === "/" ||
+          href.startsWith("/?")
+        );
+      };
       const nodes = Array.from(
         document.querySelectorAll(
           "[role='menuitem'], [role='menuitem'] span, [role='dialog'] span, [role='menu'] span, button, a, span, div"
@@ -417,16 +442,14 @@ const pickComposerMode = async (page, videoPost) => {
           const raw = (n.innerText || "").trim().toLowerCase();
           const first = raw.split("\n")[0].trim();
           const al = (n.getAttribute("aria-label") || "").toLowerCase();
-          return (
-            first === label ||
-            raw === label ||
-            raw.startsWith(`${label}\n`) ||
-            al === label
-          );
+          if (first === "reels" || al === "reels") return false;
+          if (isFeedNav(n)) return false;
+          return first === label || raw === label || al === label;
         });
         if (!el) continue;
         const clickable =
           el.closest("[role='menuitem'], a, button, [role='button']") || el;
+        if (isFeedNav(clickable)) continue;
         const rect = clickable.getBoundingClientRect();
         if (rect.width < 2 || rect.height < 2) continue;
         if (rect.left > 420) continue;
@@ -660,6 +683,15 @@ const postOnce = async (caption, imageInputs) => {
     }
 
     await clickPlusIcon(page);
+    if (/\/reels\/?(\?|$)/i.test(page.url())) {
+      console.log("Opened Reels feed by mistake — going Home");
+      await page.goto("https://www.instagram.com/?hl=en", {
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
+      });
+      await delay(3000);
+      await clickPlusIcon(page);
+    }
     await clickCreateMenu(page);
     let mode = await pickComposerMode(page, videoPost);
     if (!mode) {
