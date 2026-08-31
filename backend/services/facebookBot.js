@@ -136,31 +136,47 @@ const maximizeWindow = async (page) => {
   }
 };
 
+const captionLooksSet = async (page, caption) => {
+  const start = String(caption || "").trim().slice(0, 40);
+  return page.evaluate((prefix) => {
+    const els = [
+      ...document.querySelectorAll(
+        "[role='dialog'] [role='textbox'], [role='dialog'] [contenteditable='true']"
+      ),
+    ];
+    return els.some((el) => {
+      const t = (el.innerText || "").trim();
+      if (!t || /^what's on your mind/i.test(t)) return false;
+      return !prefix || t.includes(prefix) || t.startsWith(prefix.slice(0, 20));
+    });
+  }, start);
+};
+
 const pasteCaption = async (page, caption) => {
   const box = await page.waitForSelector(
     "[role='dialog'] [role='textbox'], [role='dialog'] [contenteditable='true']",
-    { timeout: 15000 }
+    { timeout: 12000 }
   );
-  await box.click({ delay: 80 });
-  await delay(400);
+  await box.click({ delay: 40 });
+  await delay(150);
   try {
     await page.keyboard.insertText(caption);
   } catch {
     await page.keyboard.type(caption, { delay: 0 });
   }
-  await delay(500);
 
-  const hasText = await page.evaluate(() => {
-    const el = document.querySelector("[role='dialog'] [role='textbox']");
-    const t = (el?.innerText || "").trim();
-    if (!t) return false;
-    return !/^what's on your mind/i.test(t);
-  });
-  if (!hasText) {
-    console.log("insertText did not stick — typing caption");
-    await box.click({ delay: 50 });
-    await delay(200);
-    await page.keyboard.type(caption, { delay: 1 });
+  if (!(await captionLooksSet(page, caption))) {
+    console.log("insertText did not stick — retrying caption");
+    await box.click({ delay: 40 });
+    await delay(120);
+    await page.keyboard.down("Control");
+    await page.keyboard.press("KeyA");
+    await page.keyboard.up("Control");
+    try {
+      await page.keyboard.insertText(caption);
+    } catch {
+      await page.keyboard.type(caption, { delay: 0 });
+    }
   }
 
   // Close hashtag typeahead without closing the composer (Escape would close it).
@@ -196,6 +212,132 @@ const shrinkComposerMedia = async (page) => {
   });
 };
 
+const humanClick = async (page, x, y, label) => {
+  const px = Math.round(x);
+  const py = Math.round(y);
+  await page.mouse.move(px, py, { steps: 8 });
+  await delay(80);
+  await page.mouse.click(px, py, { delay: 60 });
+  console.log(`Facebook ${label} clicked @ ${px},${py}`);
+};
+
+const inspectComposerAction = async (page) => {
+  return page.evaluate(() => {
+    const dialog = document.querySelector("[role='dialog']");
+    if (!dialog) return { status: "no-dialog" };
+
+    const text = (dialog.innerText || "").toLowerCase();
+    if (
+      text.includes("couldn't upload") ||
+      text.includes("couldn’t upload") ||
+      text.includes("something went wrong")
+    ) {
+      return { status: "upload-error" };
+    }
+
+    const busy =
+      text.includes("uploading") ||
+      text.includes("processing") ||
+      text.includes("preparing") ||
+      text.includes("almost ready");
+
+    const isDisabled = (el) => {
+      let n = el;
+      for (let i = 0; i < 8 && n; i++) {
+        if (
+          n.getAttribute("aria-disabled") === "true" ||
+          n.hasAttribute("disabled") ||
+          n.getAttribute("aria-busy") === "true"
+        ) {
+          return true;
+        }
+        n = n.parentElement;
+      }
+      return false;
+    };
+
+    const firstLine = (el) =>
+      (
+        el.getAttribute("aria-label") ||
+        el.innerText ||
+        ""
+      )
+        .trim()
+        .toLowerCase()
+        .split("\n")[0]
+        .trim();
+
+    const classify = (label) => {
+      if (!label) return null;
+      if (
+        label === "post" ||
+        label === "post now" ||
+        label === "share" ||
+        label === "share now" ||
+        label.startsWith("post as ") ||
+        label === "पोस्ट" ||
+        label === "पोस्ट करें"
+      ) {
+        return "post";
+      }
+      if (
+        label === "next" ||
+        label === "continue" ||
+        label === "done" ||
+        label === "अगला"
+      ) {
+        return "next";
+      }
+      return null;
+    };
+
+    const hits = [];
+    const nodes = [
+      ...dialog.querySelectorAll("[role='button'], button, [aria-label]"),
+    ];
+    for (const el of nodes) {
+      const kind = classify(firstLine(el));
+      if (!kind) continue;
+      const clickable = el.closest("[role='button'], button") || el;
+      const rect = clickable.getBoundingClientRect();
+      const style = window.getComputedStyle(clickable);
+      if (rect.width < 8 || rect.height < 8) continue;
+      if (kind === "next" && (rect.width < 48 || rect.height < 24)) continue;
+      if (style.visibility === "hidden" || style.display === "none") continue;
+      if (Number(style.opacity) === 0) continue;
+      hits.push({
+        kind,
+        disabled: isDisabled(clickable),
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+        w: rect.width,
+        h: rect.height,
+        label: firstLine(el),
+      });
+    }
+
+    if (!hits.length) {
+      return { status: busy ? "busy" : "missing", busy };
+    }
+
+    // Footer Post/Next is the bottom-most, then widest control.
+    hits.sort((a, b) => b.y - a.y || b.w - a.w);
+    const post = hits.find((h) => h.kind === "post");
+    const next = hits.find((h) => h.kind === "next" && !h.disabled);
+    // If Post is still greyed out (video processing / editor step), take Next.
+    if (post && !post.disabled) {
+      return { status: "ready", ...post, busy };
+    }
+    if (next) {
+      return { status: "ready", ...next, busy };
+    }
+    if (post) {
+      return { status: "disabled", ...post, busy };
+    }
+    return { status: busy ? "busy" : "missing", busy };
+  });
+};
+
 const scrollComposerToPost = async (page) => {
   await shrinkComposerMedia(page);
   await page.evaluate(() => {
@@ -212,63 +354,109 @@ const scrollComposerToPost = async (page) => {
         el.scrollTop = el.scrollHeight;
       }
     }
-    const btn = [...dialog.querySelectorAll("[aria-label='Post']")].pop();
+    const labels = ["post", "share", "next", "continue", "done"];
+    const btn = [...dialog.querySelectorAll("[role='button'], button, [aria-label]")]
+      .filter((el) => {
+        const t = (
+          el.getAttribute("aria-label") ||
+          el.innerText ||
+          ""
+        )
+          .trim()
+          .toLowerCase()
+          .split("\n")[0];
+        return labels.includes(t) || t.startsWith("post as ");
+      })
+      .pop();
     if (!btn) return;
     let p = btn.parentElement;
     while (p) {
       if (p.scrollHeight > p.clientHeight + 10) p.scrollTop = p.scrollHeight;
       p = p.parentElement;
     }
-    btn.scrollIntoView({ block: "end", inline: "nearest" });
+    btn.scrollIntoView({ block: "center", inline: "nearest" });
   });
 };
 
-/** Click Post even if the footer is below the fold / taskbar. */
-const clickFacebookPostButton = async (page) => {
-  for (let i = 0; i < 10; i++) {
+const composerClosed = async (page) =>
+  page.evaluate(() => !document.querySelector("[role='dialog']"));
+
+/** Wait until Post/Share is enabled (video processing), clicking Next if needed. */
+const waitForEnabledPostButton = async (page, videoPost) => {
+  const timeout = videoPost ? 180000 : 45000;
+  const deadline = Date.now() + timeout;
+  let lastStatus = "";
+
+  while (Date.now() < deadline) {
     await scrollComposerToPost(page);
-    const result = await page.evaluate(() => {
-      const dialog = document.querySelector("[role='dialog']");
-      if (!dialog) return "no-dialog";
+    const info = await inspectComposerAction(page);
+    const status = `${info.status}:${info.kind || ""}:${info.label || ""}`;
+    if (status !== lastStatus) {
+      console.log("Facebook composer action:", info);
+      lastStatus = status;
+    }
 
-      const matches = [...dialog.querySelectorAll("[aria-label='Post']")];
-      if (!matches.length) return "missing";
-      const btn = matches[matches.length - 1];
-      if (btn.getAttribute("aria-disabled") === "true") return "disabled";
+    if (info.status === "no-dialog") return { ok: false, reason: "no-dialog" };
+    if (info.status === "upload-error") {
+      return { ok: false, reason: "upload-error" };
+    }
 
-      btn.focus();
-      for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
-        btn.dispatchEvent(
-          new MouseEvent(type, { bubbles: true, cancelable: true, view: window })
-        );
-      }
-      btn.click();
-      return "clicked";
-    });
+    if (info.kind === "next" && info.status === "ready") {
+      await humanClick(page, info.x, info.y, "Next");
+      await delay(1200);
+      continue;
+    }
 
-    console.log("Facebook Post button:", result);
-    if (result === "clicked") return true;
-    if (result === "no-dialog") return false;
-    await delay(1500);
+    if (info.kind === "post" && info.status === "ready") {
+      return { ok: true, info };
+    }
+
+    await delay(1200);
   }
-  return false;
+
+  return { ok: false, reason: "timeout" };
 };
 
-const submitFacebookPost = async (page) => {
-  await scrollComposerToPost(page);
-  await delay(400);
+/** Real mouse click — Facebook ignores synthetic dispatchEvent clicks. */
+const clickFacebookPostButton = async (page) => {
+  for (let i = 0; i < 8; i++) {
+    if (await composerClosed(page)) return true;
+    await scrollComposerToPost(page);
+    const info = await inspectComposerAction(page);
+    console.log("Facebook Post button:", info);
+    if (info.status === "no-dialog") return true;
+    if (info.kind === "next" && info.status === "ready") {
+      await humanClick(page, info.x, info.y, "Next");
+      await delay(1200);
+      continue;
+    }
+    if (info.kind === "post" && info.status === "ready") {
+      await humanClick(page, info.x, info.y, "Post");
+      await delay(1500);
+      if (await composerClosed(page)) return true;
+      continue;
+    }
+    await delay(800);
+  }
+
+  return composerClosed(page);
+};
+
+const submitFacebookPost = async (page, videoPost = false) => {
+  const waited = await waitForEnabledPostButton(page, videoPost);
+  if (!waited.ok) {
+    if (waited.reason === "no-dialog") return true;
+    console.log("Facebook Post wait failed:", waited.reason);
+    return false;
+  }
 
   await page.keyboard.down("Control");
   await page.keyboard.press("Enter");
   await page.keyboard.up("Control");
   console.log("Sent Ctrl+Enter (Facebook publish shortcut)");
-  await delay(2500);
+  await delay(800);
 
-  const closed = await page.evaluate(
-    () => !document.querySelector("[role='dialog']")
-  );
-  if (closed) return true;
-
+  if (await composerClosed(page)) return true;
   return clickFacebookPostButton(page);
 };
 
@@ -303,11 +491,11 @@ const postOnce = async (caption, imageInputs) => {
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
-    await delay(2000);
+    await delay(800);
     try {
       await page.keyboard.press("Escape");
     } catch {}
-    await delay(3000);
+    await delay(400);
 
     let createBtn = await ensureLoggedIn(page);
     if (!createBtn) {
@@ -323,11 +511,15 @@ const postOnce = async (caption, imageInputs) => {
 
     await createBtn.click();
     console.log("Post box opened");
-    await delay(4000);
     await page.waitForSelector("[role='dialog']", { timeout: 20000 });
+    await delay(400);
 
     const videoPost =
       Array.isArray(imageInputs) && imageInputs.some(isVideoMedia);
+
+    // Caption first — textbox is ready immediately; after video Facebook
+    // often remounts the composer and typing there is slow/unreliable.
+    await pasteCaption(page, caption);
 
     if (imageInputs && imageInputs.length > 0) {
 
@@ -352,29 +544,36 @@ const postOnce = async (caption, imageInputs) => {
         throw new Error("Failed to prepare any Facebook media");
       }
 
-      await page.evaluate(() => {
-        const dialog = document.querySelector("[role='dialog']");
-        if (!dialog) return;
-        const nodes = Array.from(
-          dialog.querySelectorAll("[aria-label], div[role='button'], span")
-        );
-        for (const el of nodes) {
-          const aria = (el.getAttribute("aria-label") || "").toLowerCase();
-          const text = (el.innerText || "").trim().toLowerCase();
-          if (
-            aria.includes("photo/video") ||
-            aria.includes("photo / video") ||
-            text === "photo/video" ||
-            text.includes("photo/video")
-          ) {
-            (el.closest("[role='button']") || el).click();
-            return;
+      const clickPhotoVideo = async () => {
+        await page.evaluate(() => {
+          const dialog = document.querySelector("[role='dialog']");
+          if (!dialog) return;
+          const nodes = Array.from(
+            dialog.querySelectorAll("[aria-label], div[role='button'], span")
+          );
+          for (const el of nodes) {
+            const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+            const text = (el.innerText || "").trim().toLowerCase();
+            if (
+              aria.includes("photo/video") ||
+              aria.includes("photo / video") ||
+              text === "photo/video" ||
+              text.includes("photo/video")
+            ) {
+              (el.closest("[role='button']") || el).click();
+              return;
+            }
           }
-        }
-      });
-      await delay(2000);
+        });
+      };
 
-      const fileInputs = await page.$$("[role='dialog'] input[type='file']");
+      let fileInputs = await page.$$("[role='dialog'] input[type='file']");
+      if (!fileInputs.length) {
+        await clickPhotoVideo();
+        await delay(700);
+        fileInputs = await page.$$("[role='dialog'] input[type='file']");
+      }
+
       let fileInput = null;
       for (const input of fileInputs) {
         const accept = await page.evaluate((el) => el.accept || "", input);
@@ -411,40 +610,21 @@ const postOnce = async (caption, imageInputs) => {
         ...(videoPost ? imagePaths.slice(0, 1) : imagePaths)
       );
       console.log(videoPost ? "Video uploaded" : "Images uploaded");
-
-      await page.waitForFunction(
-        () => {
-          const dialog = document.querySelector("[role='dialog']");
-          if (!dialog) return false;
-          const t = (dialog.innerText || "").toLowerCase();
-          if (
-            t.includes("couldn't upload") ||
-            t.includes("something went wrong")
-          ) {
-            return true;
-          }
-          if (t.includes("uploading") || t.includes("processing")) return false;
-          return Boolean(
-            dialog.querySelector("video") ||
-              dialog.querySelector("[aria-label='Edit']") ||
-              dialog.querySelector("svg[aria-label='Play']") ||
-              dialog.querySelector("[aria-label='Play']") ||
-              dialog.querySelector("img[src*='scontent']")
-          );
-        },
-        { timeout: videoPost ? 45000 : 20000 }
-      ).catch(() => {
-        console.log("Media ready wait timed out — continuing");
-      });
-      await delay(1500);
       await shrinkComposerMedia(page);
+
+      if (!(await captionLooksSet(page, caption))) {
+        console.log("Caption lost after media — re-entering");
+        await pasteCaption(page, caption);
+      }
     }
 
-    await pasteCaption(page, caption);
-    await delay(500);
-
-    const posted = await submitFacebookPost(page);
+    const posted = await submitFacebookPost(page, videoPost);
     if (!posted) {
+      try {
+        const shot = path.resolve(`fb_debug_postbtn_${Date.now()}.png`);
+        await page.screenshot({ path: shot, fullPage: true });
+        console.log("Debug screenshot:", shot);
+      } catch {}
       throw new Error("Facebook Post button not found or still disabled");
     }
     console.log("Post clicked");
