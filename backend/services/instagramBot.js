@@ -115,6 +115,16 @@ const saveDebugShot = async (page, label) => {
   } catch {}
 };
 
+/** RDP/DPI-safe click: move first, then press. Instagram ignores DOM .click(). */
+const humanClick = async (page, x, y, label) => {
+  const px = Math.round(x);
+  const py = Math.round(y);
+  await page.mouse.move(px, py, { steps: 12 });
+  await delay(160);
+  await page.mouse.click(px, py, { delay: 70 });
+  console.log(`✅ ${label} clicked @ ${px},${py}`);
+};
+
 // ================= ENABLE CAROUSEL =================
 const enableCarousel = async (page) => {
   try {
@@ -193,14 +203,13 @@ const clickLeftNav = async (page, labels, labelName) => {
     }, wanted);
 
     if (found) {
-      await page.mouse.click(found.x, found.y, { delay: 60 });
-      console.log(`✅ ${labelName} clicked`);
-      await delay(1800);
-      return true;
+      await humanClick(page, found.x, found.y, labelName);
+      await delay(2000);
+      return found;
     }
     await delay(400);
   }
-  return false;
+  return null;
 };
 
 const clickPlusIcon = async (page) => {
@@ -259,10 +268,9 @@ const clickPlusIcon = async (page) => {
     });
 
     if (target) {
-      await page.mouse.click(target.x, target.y, { delay: 60 });
-      console.log("✅ Plus (+) clicked");
-      await delay(1800);
-      return;
+      await humanClick(page, target.x, target.y, "Plus (+)");
+      await delay(2000);
+      return target;
     }
     await delay(500);
   }
@@ -272,11 +280,12 @@ const clickPlusIcon = async (page) => {
 };
 
 const clickCreateMenu = async (page) => {
-  const ok = await clickLeftNav(page, ["create"], "Create");
-  if (!ok) {
+  const found = await clickLeftNav(page, ["create"], "Create");
+  if (!found) {
     await saveDebugShot(page, "no_create_menu");
     throw new Error("❌ Create not found after clicking +");
   }
+  return found;
 };
 
 const CAPTION_SELECTORS = [
@@ -415,11 +424,16 @@ const clickNext = (page, opts) =>
 const clickShare = (page) =>
   clickByExactText(page, ["share", "post", "share now"], "Share");
 
-const pickComposerMode = async (page, videoPost) => {
-  // Only the Create flyout "Post" — never the sidebar "Reels" feed link.
-  const labels = ["post"];
-  for (let attempt = 0; attempt < 12; attempt++) {
-    const found = await page.evaluate((wanted) => {
+/**
+ * Click "Post" in the Create flyout (the submenu just below/beside Create).
+ * Previous matcher failed on RDP because:
+ *  - parent container innerText starts with "Post" so it clicked the whole menu
+ *  - flyout sits to the right of the nav (left > 420 was skipped)
+ *  - RDP DPI made instant mouse.click miss the small row
+ */
+const pickComposerMode = async (page, _videoPost, createAnchor) => {
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const result = await page.evaluate((anchor) => {
       const isFeedNav = (el) => {
         const a = el.closest("a");
         const href = (a?.getAttribute("href") || "").toLowerCase();
@@ -432,46 +446,175 @@ const pickComposerMode = async (page, videoPost) => {
           href.startsWith("/?")
         );
       };
+
+      const isPostLabel = (first, raw, al) => {
+        const blocked = new Set([
+          "create",
+          "new post",
+          "reels",
+          "reel",
+          "story",
+          "live",
+          "live video",
+          "ad",
+        ]);
+        if (blocked.has(first) || blocked.has(al)) return false;
+        const ok = (t) => {
+          if (!t) return false;
+          if (t === "post") return true;
+          if (t.startsWith("post ") && !t.includes("shared") && !t.includes("posted")) {
+            return true;
+          }
+          return false;
+        };
+        return ok(first) || ok(raw) || ok(al);
+      };
+
       const nodes = Array.from(
         document.querySelectorAll(
-          "[role='menuitem'], [role='menuitem'] span, [role='dialog'] span, [role='menu'] span, button, a, span, div"
+          "[role='menuitem'], [role='menu'] *, [role='listbox'] *, [role='dialog'] *, svg[aria-label], [aria-label], button, a, span, div"
         )
       );
-      for (const label of wanted) {
-        const el = nodes.find((n) => {
-          const raw = (n.innerText || "").trim().toLowerCase();
-          const first = raw.split("\n")[0].trim();
-          const al = (n.getAttribute("aria-label") || "").toLowerCase();
-          if (first === "reels" || al === "reels") return false;
-          if (isFeedNav(n)) return false;
-          return first === label || raw === label || al === label;
-        });
-        if (!el) continue;
+
+      const candidates = [];
+      for (const n of nodes) {
+        const raw = (n.innerText || "").trim().toLowerCase();
+        const lines = raw
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean);
+        const first = (lines[0] || "").trim();
+        const al = (
+          n.getAttribute("aria-label") ||
+          ""
+        ).toLowerCase();
+
+        // Whole flyout container: "Post / Live / Ad" — skip, click the row not the box
+        if (lines.length >= 3) continue;
+        if (isFeedNav(n)) continue;
+        if (!isPostLabel(first, raw, al)) continue;
+
         const clickable =
-          el.closest("[role='menuitem'], a, button, [role='button']") || el;
+          n.closest("[role='menuitem'], [role='button'], a, button") || n;
         if (isFeedNav(clickable)) continue;
+
         const rect = clickable.getBoundingClientRect();
-        if (rect.width < 2 || rect.height < 2) continue;
-        if (rect.left > 420) continue;
+        if (rect.width < 8 || rect.height < 8) continue;
+        if (rect.height > 96) continue;
+        if (rect.width > 480) continue;
+        // Flyout is beside the left nav — allow well past 420 for RDP wide layout
+        if (rect.left > 760) continue;
+
         const style = window.getComputedStyle(clickable);
         if (style.visibility === "hidden" || style.display === "none") continue;
-        return {
-          x: rect.left + rect.width / 2,
-          y: rect.top + rect.height / 2,
-          label,
-        };
-      }
-      return null;
-    }, labels);
+        if (Number(style.opacity) === 0) continue;
 
-    if (found) {
-      await page.mouse.click(found.x, found.y, { delay: 60 });
-      console.log(`✅ Composer mode: ${found.label}`);
-      await delay(2500);
-      return found.label;
+        const x = rect.left + Math.min(rect.width, 180) / 2;
+        const y = rect.top + rect.height / 2;
+
+        if (anchor) {
+          const dist = Math.hypot(x - anchor.x, y - anchor.y);
+          if (dist < 28) continue;
+        }
+
+        let score = 0;
+        const role = (clickable.getAttribute("role") || "").toLowerCase();
+        if (role === "menuitem") score += 24;
+        if (n.closest("[role='menu'], [role='dialog'], [role='listbox']")) score += 16;
+        if (rect.height <= 64) score += 8;
+        if (first === "post" || al === "post") score += 10;
+        if (anchor) {
+          if (y > anchor.y - 10 && y < anchor.y + 300) score += 14;
+          if (x >= anchor.x - 40 && x <= anchor.x + 460) score += 12;
+          score -= Math.abs(y - (anchor.y + 50)) / 8;
+        }
+        score -= (rect.width * rect.height) / 10000;
+
+        candidates.push({
+          x,
+          y,
+          w: Math.round(rect.width),
+          h: Math.round(rect.height),
+          label: first || al || "post",
+          score,
+        });
+      }
+
+      candidates.sort((a, b) => b.score - a.score);
+      return {
+        hit: candidates[0] || null,
+        debug: candidates.slice(0, 8),
+      };
+    }, createAnchor || null);
+
+    if (attempt === 0 || attempt === 4) {
+      console.log(
+        "Create→Post candidates:",
+        result?.debug?.length
+          ? result.debug
+              .map(
+                (c) =>
+                  `${c.label} @${Math.round(c.x)},${Math.round(c.y)} ${c.w}x${c.h} s=${c.score?.toFixed?.(1) ?? c.score}`
+              )
+              .join(" | ")
+          : "(none yet)"
+      );
     }
-    await delay(400);
+
+    if (result?.hit) {
+      await humanClick(page, result.hit.x, result.hit.y, "Composer Post");
+      await delay(2500);
+      return result.hit.label || "post";
+    }
+    await delay(450);
   }
+
+  const flyoutOpen = await page.evaluate((anchor) => {
+    if (document.querySelector("[role='menu'], [role='menuitem']")) return true;
+    const smallDialog = Array.from(document.querySelectorAll("[role='dialog']")).some(
+      (d) => {
+        const r = d.getBoundingClientRect();
+        return (
+          r.width > 80 &&
+          r.width < 480 &&
+          r.height > 60 &&
+          r.height < 520 &&
+          r.left < 760
+        );
+      }
+    );
+    if (smallDialog) return true;
+    if (!anchor) return false;
+    return Array.from(document.querySelectorAll("span, div, [role='button']")).some(
+      (n) => {
+        const t = (n.innerText || "").trim().toLowerCase().split("\n")[0];
+        if (t !== "post") return false;
+        const r = n.getBoundingClientRect();
+        if (r.height < 8 || r.height > 90 || r.left > 760) return false;
+        return Math.abs(r.top - (anchor.y || 0)) < 280;
+      }
+    );
+  }, createAnchor || null);
+
+  if (createAnchor && flyoutOpen) {
+    const offsets = [
+      { x: 90, y: 48 },
+      { x: 120, y: 56 },
+      { x: 40, y: 52 },
+      { x: 8, y: 48 },
+    ];
+    for (const off of offsets) {
+      const x = createAnchor.x + off.x;
+      const y = createAnchor.y + off.y;
+      console.log(`Trying Post row offset below Create (${off.x},${off.y})`);
+      await humanClick(page, x, y, "Composer Post (below Create)");
+      await delay(1800);
+      const opened = await safeHas(page, "input[type='file']");
+      if (opened) return "post";
+    }
+  }
+
+  await saveDebugShot(page, "no_create_post");
   console.log("⏭️ Composer menu not shown — trying upload on current screen");
   return null;
 };
@@ -620,13 +763,14 @@ const postOnce = async (caption, imageInputs) => {
     browser = await puppeteer.launch({
       headless: !isHeaded(),
       ...browserOpts,
-      defaultViewport: { width: 1400, height: 900 },
+      defaultViewport: { width: 1400, height: 1080, deviceScaleFactor: 1 },
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
-        "--window-size=1400,1000",
+        "--window-size=1400,1080",
         "--window-position=0,0",
+        "--force-device-scale-factor=1",
         "--disable-session-crashed-bubble",
         "--hide-crash-restore-bubble",
         "--disable-infobars",
@@ -637,7 +781,7 @@ const postOnce = async (caption, imageInputs) => {
     assertEdgeProcess(browser);
 
     const page = await browser.newPage();
-    await page.setViewport({ width: 1400, height: 900 });
+    await page.setViewport({ width: 1400, height: 1080, deviceScaleFactor: 1 });
     await page.setUserAgent(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
     );
@@ -647,6 +791,10 @@ const postOnce = async (caption, imageInputs) => {
       timeout: 60000,
     });
     await delay(5000);
+    try {
+      const dpr = await page.evaluate(() => window.devicePixelRatio);
+      console.log("Instagram viewport DPR:", dpr);
+    } catch {}
 
     await ensureLoggedIn(page);
 
@@ -682,7 +830,7 @@ const postOnce = async (caption, imageInputs) => {
       throw new Error("Failed to prepare any Instagram media");
     }
 
-    await clickPlusIcon(page);
+    const plusAt = await clickPlusIcon(page);
     if (/\/reels\/?(\?|$)/i.test(page.url())) {
       console.log("Opened Reels feed by mistake — going Home");
       await page.goto("https://www.instagram.com/?hl=en", {
@@ -692,12 +840,23 @@ const postOnce = async (caption, imageInputs) => {
       await delay(3000);
       await clickPlusIcon(page);
     }
-    await clickCreateMenu(page);
-    let mode = await pickComposerMode(page, videoPost);
+
+    // Plus may already open the composer or the Create flyout
+    let createAt = plusAt;
+    let mode = (await safeHas(page, "input[type='file']")) ? "post" : null;
     if (!mode) {
-      await clickPlusIcon(page);
-      await clickCreateMenu(page);
-      mode = await pickComposerMode(page, videoPost);
+      mode = await pickComposerMode(page, videoPost, plusAt);
+    }
+    if (!mode) {
+      createAt = await clickCreateMenu(page);
+      await delay(1200);
+      mode = await pickComposerMode(page, videoPost, createAt);
+    }
+    if (!mode) {
+      const plusRetry = await clickPlusIcon(page);
+      createAt = await clickCreateMenu(page);
+      await delay(1200);
+      mode = await pickComposerMode(page, videoPost, createAt || plusRetry);
     }
     await delay(1500);
 
@@ -712,7 +871,7 @@ const postOnce = async (caption, imageInputs) => {
       await page.waitForSelector("input[type='file']", { timeout: 15000 });
     } catch {
       console.log("No file input yet — clicking Post/Reel again");
-      await pickComposerMode(page, videoPost);
+      await pickComposerMode(page, videoPost, createAt);
       await page.waitForSelector("input[type='file']", { timeout: 25000 });
     }
     const fileInput = await page.$("input[type='file']");
