@@ -6,6 +6,12 @@ import { saveImage } from "../utils/saveImage.js";
 import { isVideoMedia, saveMediaFile, resolveUploadPath } from "../utils/media.js";
 import { createMutex } from "../utils/mutex.js";
 import { resolveIgBrowserLaunch, assertEdgeProcess } from "../utils/igBrowser.js";
+import {
+  prepareBrowserProfile,
+  useSinglePage,
+  closeExtraPages,
+  closeBrowserHard,
+} from "../utils/browserSession.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Edge profile (separate from Chrome) — Instagram blocks Chromium more often on servers
@@ -874,12 +880,7 @@ const postOnce = async (caption, imageInputs) => {
       throw new Error("No media provided for Instagram");
     }
 
-    const lockFile = path.join(SESSION_DIR, "SingletonLock");
-    if (fs.existsSync(lockFile)) {
-      try {
-        fs.unlinkSync(lockFile);
-      } catch {}
-    }
+    prepareBrowserProfile(SESSION_DIR);
 
     const { label, executablePath, options: browserOpts } =
       resolveIgBrowserLaunch();
@@ -898,6 +899,8 @@ const postOnce = async (caption, imageInputs) => {
         "--window-size=1400,1080",
         "--window-position=0,0",
         "--force-device-scale-factor=1",
+        "--disable-restore-session-state",
+        "--no-first-run",
         "--disable-session-crashed-bubble",
         "--hide-crash-restore-bubble",
         "--disable-infobars",
@@ -907,7 +910,7 @@ const postOnce = async (caption, imageInputs) => {
     });
     assertEdgeProcess(browser);
 
-    const page = await browser.newPage();
+    const page = await useSinglePage(browser);
     await page.setViewport({ width: 1400, height: 1080, deviceScaleFactor: 1 });
 
     await page.goto("https://www.instagram.com/?hl=en", {
@@ -915,6 +918,7 @@ const postOnce = async (caption, imageInputs) => {
       timeout: 60000,
     });
     await delay(5000);
+    await closeExtraPages(browser, page);
     try {
       const dpr = await page.evaluate(() => window.devicePixelRatio);
       console.log("Instagram viewport DPR:", dpr);
@@ -1044,11 +1048,6 @@ const postOnce = async (caption, imageInputs) => {
         }
       } catch {}
     }
-    if (browser) {
-      try {
-        await browser.close();
-      } catch {}
-    }
-    await delay(3000);
+    await closeBrowserHard(browser, SESSION_DIR);
   }
 };

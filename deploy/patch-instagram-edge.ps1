@@ -20,6 +20,7 @@ if ($LASTEXITCODE -ne 0) { throw "git pull failed" }
 
 $files = @(
   "utils\igBrowser.js",
+  "utils\browserSession.js",
   "services\instagramBot.js",
   "services\facebookBot.js",
   "scheduler\postScheduler.js",

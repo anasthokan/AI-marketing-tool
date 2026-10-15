@@ -5,6 +5,12 @@ import { fileURLToPath } from "url";
 import { saveImage } from "../utils/saveImage.js";
 import { isVideoMedia, saveMediaFile, resolveUploadPath } from "../utils/media.js";
 import { createMutex } from "../utils/mutex.js";
+import {
+  prepareBrowserProfile,
+  useSinglePage,
+  closeExtraPages,
+  closeBrowserHard,
+} from "../utils/browserSession.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SESSION_DIR = path.resolve(__dirname, "..", "facebook-session");
@@ -27,6 +33,8 @@ const CHROME_ARGS = [
   "--window-position=0,0",
   "--start-maximized",
   "--force-device-scale-factor=1",
+  "--disable-restore-session-state",
+  "--no-first-run",
   "--disable-session-crashed-bubble",
   "--hide-crash-restore-bubble",
   "--disable-infobars",
@@ -548,13 +556,7 @@ const postOnce = async (caption, imageInputs) => {
   const imagePaths = [];
 
   try {
-    // Clear stale lock if previous crash left Chrome lock
-    const lockFile = path.join(SESSION_DIR, "SingletonLock");
-    if (fs.existsSync(lockFile)) {
-      try {
-        fs.unlinkSync(lockFile);
-      } catch {}
-    }
+    prepareBrowserProfile(SESSION_DIR);
 
     browser = await puppeteer.launch({
       headless: !isHeaded(),
@@ -563,7 +565,7 @@ const postOnce = async (caption, imageInputs) => {
       userDataDir: SESSION_DIR,
     });
 
-    const page = await browser.newPage();
+    const page = await useSinglePage(browser);
     await page.setViewport(VIEWPORT);
     await maximizeWindow(page);
 
@@ -574,6 +576,7 @@ const postOnce = async (caption, imageInputs) => {
       })
     );
     await delay(1200);
+    await closeExtraPages(browser, page);
     await dismissPopups(page);
 
     let createAt = await ensureLoggedIn(page);
@@ -739,12 +742,6 @@ const postOnce = async (caption, imageInputs) => {
     return { success: true };
   } catch (err) {
     console.log("ERROR:", err.message);
-    if (isHeaded() && browser) {
-      console.log(
-        "Chrome staying open 2 minutes — press Ctrl+Enter to publish, or scroll the composer and click Post."
-      );
-      await delay(120000);
-    }
     return { success: false, error: err.message };
   } finally {
     for (const file of imagePaths) {
@@ -755,13 +752,7 @@ const postOnce = async (caption, imageInputs) => {
         }
       } catch {}
     }
-    if (browser) {
-      try {
-        await browser.close();
-      } catch {}
-    }
-    // Let Chrome release profile lock
-    await delay(3000);
+    await closeBrowserHard(browser, SESSION_DIR);
   }
 };
 
