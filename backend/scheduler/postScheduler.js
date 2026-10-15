@@ -1,5 +1,6 @@
 import cron from "node-cron";
 import fs from "fs";
+import mongoose from "mongoose";
 import Post from "../models/Post.js";
 import { postToInstagramBot } from "../services/instagramBot.js";
 import { postToFacebookBot } from "../services/facebookBot.js";
@@ -48,6 +49,11 @@ export const startScheduler = () => {
     running = true;
 
     try {
+      if (mongoose.connection.readyState !== 1) {
+        console.log("Scheduler skipped — MongoDB not connected");
+        return;
+      }
+
       if (!retriedLegacyVideo) {
         retriedLegacyVideo = true;
         const reset = await Post.updateMany(

@@ -24,15 +24,36 @@ app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 startScheduler();
 
-// MongoDB connect (retry so late mongod start still works)
-const mongoUri = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/ai-marketing";
-mongoose
-  .connect(mongoUri)
-  .then(() => console.log("MongoDB Connected"))
-  .catch((err) => console.log("MongoDB initial connect failed:", err.message));
+const mongoUri =
+  process.env.MONGO_URI || "mongodb://127.0.0.1:27017/ai-marketing";
+let mongoRetryTimer = null;
+
+const connectMongo = async () => {
+  if (mongoose.connection.readyState === 1) return;
+  try {
+    await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 5000 });
+    console.log("MongoDB Connected");
+  } catch (err) {
+    console.log("MongoDB connect failed, retrying in 5s:", err.message);
+    if (!mongoRetryTimer) {
+      mongoRetryTimer = setTimeout(() => {
+        mongoRetryTimer = null;
+        connectMongo();
+      }, 5000);
+    }
+  }
+};
+
+connectMongo();
 
 mongoose.connection.on("disconnected", () => {
-  console.log("MongoDB disconnected");
+  console.log("MongoDB disconnected — retrying");
+  if (!mongoRetryTimer) {
+    mongoRetryTimer = setTimeout(() => {
+      mongoRetryTimer = null;
+      connectMongo();
+    }, 5000);
+  }
 });
 mongoose.connection.on("reconnected", () => {
   console.log("MongoDB reconnected");
