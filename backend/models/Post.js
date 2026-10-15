@@ -20,6 +20,7 @@ const postSchema = new mongoose.Schema({
   posted: { type: Boolean, default: false },
   lastPostOk: Boolean,
   lastPostError: String,
+  lastPostAttemptAt: Date,
   createdAt: { type: Date, default: Date.now },
 });
 

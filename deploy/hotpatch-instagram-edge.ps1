@@ -16,6 +16,9 @@ if (-not (Test-Path $dst)) {
 $files = @(
   @{ Rel = "utils/igBrowser.js"; Url = "$base/utils/igBrowser.js" },
   @{ Rel = "services/instagramBot.js"; Url = "$base/services/instagramBot.js" },
+  @{ Rel = "services/facebookBot.js"; Url = "$base/services/facebookBot.js" },
+  @{ Rel = "scheduler/postScheduler.js"; Url = "$base/scheduler/postScheduler.js" },
+  @{ Rel = "models/Post.js"; Url = "$base/models/Post.js" },
   @{ Rel = "scripts/instagramLogin.js"; Url = "$base/scripts/instagramLogin.js" },
   @{ Rel = "server.js"; Url = "$base/server.js" }
 )

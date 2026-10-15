@@ -18,7 +18,7 @@ const isHeaded = () => {
   return v === "false" || v === "0" || v === "no";
 };
 
-const VIEWPORT = { width: 1400, height: 1080 };
+const VIEWPORT = { width: 1400, height: 1080, deviceScaleFactor: 1 };
 const CHROME_ARGS = [
   "--no-sandbox",
   "--disable-setuid-sandbox",
@@ -26,54 +26,137 @@ const CHROME_ARGS = [
   "--window-size=1400,1080",
   "--window-position=0,0",
   "--start-maximized",
+  "--force-device-scale-factor=1",
   "--disable-session-crashed-bubble",
   "--hide-crash-restore-bubble",
   "--disable-infobars",
   "--noerrdialogs",
 ];
 
-const CREATE_POST_SELECTORS = [
-  "[aria-label='Create a post']",
-  "[aria-label='Create Post']",
-  "[aria-label='Create post']",
-  "div[role='button'][aria-label*='Create a post']",
-  "div[role='button'][aria-label*='Create Post']",
-];
+const isDetachedErr = (err) =>
+  /detached|Target closed|Session closed|Execution context was destroyed|Cannot find context/i.test(
+    String(err?.message || err)
+  );
+
+const retryDetached = async (fn, tries = 6) => {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      last = err;
+      if (!isDetachedErr(err) || i === tries - 1) throw err;
+      console.log("Facebook retry after detached frame:", err.message);
+      await delay(1200);
+    }
+  }
+  throw last;
+};
+
+const dismissPopups = async (page) => {
+  try {
+    await page.evaluate(() => {
+      const labels = [
+        "not now",
+        "close",
+        "allow all cookies",
+        "accept all",
+        "decline optional cookies",
+        "allow essential cookies",
+      ];
+      const nodes = Array.from(
+        document.querySelectorAll("button, [role='button'], [aria-label]")
+      );
+      for (const el of nodes) {
+        const t = (el.innerText || el.getAttribute("aria-label") || "")
+          .trim()
+          .toLowerCase()
+          .split("\n")[0];
+        if (!labels.includes(t) && t !== "close") continue;
+        if (t === "close" && !el.closest("[role='dialog']")) continue;
+        el.click();
+      }
+    });
+  } catch {}
+  try {
+    await page.keyboard.press("Escape");
+  } catch {}
+  await delay(400);
+};
+
+const locateCreatePost = async (page) => {
+  return retryDetached(() =>
+    page.evaluate(() => {
+      const sels = [
+        "[aria-label='Create a post']",
+        "[aria-label='Create Post']",
+        "[aria-label='Create post']",
+        "[aria-label='Create a new post']",
+        "[aria-label='Create new post']",
+        "div[role='button'][aria-label*='Create a post']",
+        "div[role='button'][aria-label*='Create Post']",
+      ];
+      for (const sel of sels) {
+        const el = document.querySelector(sel);
+        if (!el) continue;
+        const clickable = el.closest("[role='button'], button") || el;
+        const r = clickable.getBoundingClientRect();
+        if (r.width > 4 && r.height > 4) {
+          return {
+            x: r.left + r.width / 2,
+            y: r.top + r.height / 2,
+            via: sel,
+          };
+        }
+      }
+
+      const nodes = Array.from(
+        document.querySelectorAll("span, div[role='button'], [role='textbox']")
+      );
+      for (const n of nodes) {
+        const t = (n.innerText || n.getAttribute("aria-label") || "")
+          .trim()
+          .toLowerCase();
+        if (
+          t.startsWith("what's on your mind") ||
+          t.startsWith("whats on your mind") ||
+          t.includes("on your mind")
+        ) {
+          const clickable = n.closest("[role='button'], button") || n;
+          const r = clickable.getBoundingClientRect();
+          if (r.width > 4 && r.height > 4) {
+            return {
+              x: r.left + Math.min(r.width, 240) / 2,
+              y: r.top + r.height / 2,
+              via: "mind",
+            };
+          }
+        }
+      }
+      return null;
+    })
+  );
+};
 
 const findCreatePost = async (page, timeoutMs = 25000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    for (const sel of CREATE_POST_SELECTORS) {
-      const el = await page.$(sel);
-      if (el) return el;
-    }
-
-    // Fallback: "What's on your mind" composer
-    const mind = await page.evaluateHandle(() => {
-      const nodes = Array.from(document.querySelectorAll("span, div"));
-      return (
-        nodes.find((n) => {
-          const t = (n.innerText || "").trim().toLowerCase();
-          return (
-            t.startsWith("what's on your mind") ||
-            t.startsWith("whats on your mind") ||
-            t.includes("on your mind")
-          );
-        }) || null
-      );
-    });
-    if (mind && mind.asElement()) return mind.asElement();
-
+    const found = await locateCreatePost(page).catch(() => null);
+    if (found) return found;
     await delay(1000);
   }
   return null;
 };
 
 const isLoginPage = async (page) => {
-  const loginForm = await page.$(
-    "input#email, input[name='email'], input[name='pass']"
-  );
-  return Boolean(loginForm);
+  try {
+    const loginForm = await page.$(
+      "input#email, input[name='email'], input[name='pass']"
+    );
+    return Boolean(loginForm);
+  } catch {
+    return false;
+  }
 };
 
 /**
@@ -222,7 +305,7 @@ const humanClick = async (page, x, y, label) => {
 };
 
 const inspectComposerAction = async (page) => {
-  return page.evaluate(() => {
+  return retryDetached(() => page.evaluate(() => {
     const dialog = document.querySelector("[role='dialog']");
     if (!dialog) return { status: "no-dialog" };
 
@@ -335,7 +418,7 @@ const inspectComposerAction = async (page) => {
       return { status: "disabled", ...post, busy };
     }
     return { status: busy ? "busy" : "missing", busy };
-  });
+  }));
 };
 
 const scrollComposerToPost = async (page) => {
@@ -483,22 +566,20 @@ const postOnce = async (caption, imageInputs) => {
     const page = await browser.newPage();
     await page.setViewport(VIEWPORT);
     await maximizeWindow(page);
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+    await retryDetached(() =>
+      page.goto("https://www.facebook.com/", {
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
+      })
     );
+    await delay(1200);
+    await dismissPopups(page);
 
-    await page.goto("https://www.facebook.com/", {
-      waitUntil: "domcontentloaded",
-      timeout: 60000,
-    });
-    await delay(800);
-    try {
-      await page.keyboard.press("Escape");
-    } catch {}
-    await delay(400);
-
-    let createBtn = await ensureLoggedIn(page);
-    if (!createBtn) {
+    let createAt = await ensureLoggedIn(page);
+    await dismissPopups(page);
+    createAt = (await locateCreatePost(page).catch(() => null)) || createAt;
+    if (!createAt) {
       const shot = path.resolve(`fb_debug_${Date.now()}.png`);
       try {
         await page.screenshot({ path: shot, fullPage: true });
@@ -509,9 +590,11 @@ const postOnce = async (caption, imageInputs) => {
       );
     }
 
-    await createBtn.click();
+    await humanClick(page, createAt.x, createAt.y, "Create post");
     console.log("Post box opened");
-    await page.waitForSelector("[role='dialog']", { timeout: 20000 });
+    await retryDetached(() =>
+      page.waitForSelector("[role='dialog']", { timeout: 20000 })
+    );
     await delay(400);
 
     const videoPost =
@@ -519,7 +602,7 @@ const postOnce = async (caption, imageInputs) => {
 
     // Caption first — textbox is ready immediately; after video Facebook
     // often remounts the composer and typing there is slow/unreliable.
-    await pasteCaption(page, caption);
+    await retryDetached(() => pasteCaption(page, caption));
 
     if (imageInputs && imageInputs.length > 0) {
 
@@ -567,11 +650,21 @@ const postOnce = async (caption, imageInputs) => {
         });
       };
 
-      let fileInputs = await page.$$("[role='dialog'] input[type='file']");
+      const collectFileInputs = async () => {
+        const found = [];
+        for (const frame of page.frames()) {
+          try {
+            found.push(...(await frame.$$("input[type='file']")));
+          } catch {}
+        }
+        return found;
+      };
+
+      let fileInputs = await collectFileInputs();
       if (!fileInputs.length) {
         await clickPhotoVideo();
         await delay(700);
-        fileInputs = await page.$$("[role='dialog'] input[type='file']");
+        fileInputs = await collectFileInputs();
       }
 
       let fileInput = null;
@@ -612,9 +705,9 @@ const postOnce = async (caption, imageInputs) => {
       console.log(videoPost ? "Video uploaded" : "Images uploaded");
       await shrinkComposerMedia(page);
 
-      if (!(await captionLooksSet(page, caption))) {
+      if (!(await retryDetached(() => captionLooksSet(page, caption)))) {
         console.log("Caption lost after media — re-entering");
-        await pasteCaption(page, caption);
+        await retryDetached(() => pasteCaption(page, caption));
       }
     }
 
@@ -629,9 +722,17 @@ const postOnce = async (caption, imageInputs) => {
     }
     console.log("Post clicked");
 
-    await page.waitForFunction(() => !document.querySelector("[role='dialog']"), {
-      timeout: 180000,
-    });
+    try {
+      await retryDetached(() =>
+        page.waitForFunction(
+          () => !document.querySelector("[role='dialog']"),
+          { timeout: 180000 }
+        )
+      );
+    } catch (err) {
+      if (!isDetachedErr(err)) throw err;
+      console.log("Facebook navigated after publish — treating as success");
+    }
 
     console.log("Facebook post done");
     await delay(3000);

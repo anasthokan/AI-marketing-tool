@@ -56,6 +56,7 @@ const isLoggedIn = async (page) => {
   const markers = [
     "svg[aria-label='New post']",
     "svg[aria-label='New Post']",
+    "svg[aria-label='Create']",
     "svg[aria-label='Home']",
     "svg[aria-label='Search']",
     "svg[aria-label='Reels']",
@@ -123,6 +124,100 @@ const humanClick = async (page, x, y, label) => {
   await delay(160);
   await page.mouse.click(px, py, { delay: 70 });
   console.log(`✅ ${label} clicked @ ${px},${py}`);
+};
+
+const dismissPopups = async (page) => {
+  try {
+    await page.evaluate(() => {
+      const labels = [
+        "not now",
+        "allow all cookies",
+        "accept all",
+        "allow essential cookies",
+        "decline optional cookies",
+        "close",
+      ];
+      const nodes = Array.from(
+        document.querySelectorAll("button, [role='button']")
+      );
+      for (const el of nodes) {
+        const t = (el.innerText || el.getAttribute("aria-label") || "")
+          .trim()
+          .toLowerCase()
+          .split("\n")[0];
+        if (!labels.includes(t)) continue;
+        el.click();
+      }
+    });
+  } catch {}
+  try {
+    await page.keyboard.press("Escape");
+  } catch {}
+  await delay(400);
+};
+
+const findFileInput = async (page) => {
+  for (const frame of page.frames()) {
+    try {
+      const el = await frame.$("input[type='file']");
+      if (el) return el;
+    } catch {}
+  }
+  return null;
+};
+
+const composerReady = async (page) => {
+  try {
+    if (await findFileInput(page)) return true;
+    return await page.evaluate(() => {
+      const t = (document.body?.innerText || "").toLowerCase();
+      return (
+        t.includes("select from computer") ||
+        t.includes("create new post") ||
+        t.includes("drag photos") ||
+        t.includes("drag and drop")
+      );
+    });
+  } catch {
+    return false;
+  }
+};
+
+const uploadToComposer = async (page, files) => {
+  const existing = await findFileInput(page);
+  if (existing) {
+    await existing.uploadFile(...files);
+    return true;
+  }
+
+  const chooserWait = page.waitForFileChooser({ timeout: 10000 }).catch(() => null);
+  try {
+    await page.evaluate(() => {
+      const nodes = Array.from(
+        document.querySelectorAll("button, [role='button'], span, div")
+      );
+      const el = nodes.find((n) => {
+        const t = (n.innerText || "").trim().toLowerCase();
+        return (
+          t === "select from computer" || t.includes("select from computer")
+        );
+      });
+      if (el) (el.closest("button, [role='button']") || el).click();
+    });
+  } catch {}
+
+  const chooser = await chooserWait;
+  if (chooser) {
+    await chooser.accept(files);
+    return true;
+  }
+
+  const again = await findFileInput(page);
+  if (again) {
+    await again.uploadFile(...files);
+    return true;
+  }
+  return false;
 };
 
 // ================= ENABLE CAROUSEL =================
@@ -218,9 +313,13 @@ const clickPlusIcon = async (page) => {
       const sels = [
         "svg[aria-label='New post']",
         "svg[aria-label='New Post']",
+        "svg[aria-label='Create']",
+        "svg[aria-label='Create post']",
         "svg[aria-label='Plus']",
         "svg[aria-label='+']",
         "[aria-label='New post']",
+        "[aria-label='Create']",
+        "[aria-label='Create post']",
         "[aria-label='Plus']",
       ];
       for (const sel of sels) {
@@ -276,14 +375,15 @@ const clickPlusIcon = async (page) => {
   }
 
   await saveDebugShot(page, "no_plus");
-  throw new Error("❌ Plus (+) icon not found in Instagram sidebar");
+  console.log("Plus / New post icon not found — trying Create text");
+  return null;
 };
 
 const clickCreateMenu = async (page) => {
-  const found = await clickLeftNav(page, ["create"], "Create");
+  const found = await clickLeftNav(page, ["create", "new post"], "Create");
   if (!found) {
     await saveDebugShot(page, "no_create_menu");
-    throw new Error("❌ Create not found after clicking +");
+    throw new Error("❌ Create not found in Instagram sidebar");
   }
   return found;
 };
@@ -433,6 +533,10 @@ const clickShare = (page) =>
  */
 const pickComposerMode = async (page, _videoPost, createAnchor) => {
   for (let attempt = 0; attempt < 16; attempt++) {
+    if (await composerReady(page)) {
+      console.log("✅ Composer already open (file picker)");
+      return "post";
+    }
     const result = await page.evaluate((anchor) => {
       const isFeedNav = (el) => {
         const a = el.closest("a");
@@ -447,10 +551,8 @@ const pickComposerMode = async (page, _videoPost, createAnchor) => {
         );
       };
 
-      const isPostLabel = (first, raw, al) => {
+      const isPostLabel = (first, raw, al, inFlyout) => {
         const blocked = new Set([
-          "create",
-          "new post",
           "reels",
           "reel",
           "story",
@@ -459,9 +561,12 @@ const pickComposerMode = async (page, _videoPost, createAnchor) => {
           "ad",
         ]);
         if (blocked.has(first) || blocked.has(al)) return false;
+        if (!inFlyout && (first === "create" || al === "new post" || al === "create")) {
+          return false;
+        }
         const ok = (t) => {
           if (!t) return false;
-          if (t === "post") return true;
+          if (t === "post" || t === "new post" || t === "create post") return true;
           if (t.startsWith("post ") && !t.includes("shared") && !t.includes("posted")) {
             return true;
           }
@@ -492,7 +597,10 @@ const pickComposerMode = async (page, _videoPost, createAnchor) => {
         // Whole flyout container: "Post / Live / Ad" — skip, click the row not the box
         if (lines.length >= 3) continue;
         if (isFeedNav(n)) continue;
-        if (!isPostLabel(first, raw, al)) continue;
+        const inFlyout = Boolean(
+          n.closest("[role='menu'], [role='dialog'], [role='listbox']")
+        );
+        if (!isPostLabel(first, raw, al, inFlyout)) continue;
 
         const clickable =
           n.closest("[role='menuitem'], [role='button'], a, button") || n;
@@ -538,6 +646,25 @@ const pickComposerMode = async (page, _videoPost, createAnchor) => {
           label: first || al || "post",
           score,
         });
+      }
+
+      if (!candidates.length) {
+        const firstItem = document.querySelector(
+          "[role='menu'] [role='menuitem'], [role='menuitem']"
+        );
+        if (firstItem && !isFeedNav(firstItem)) {
+          const rect = firstItem.getBoundingClientRect();
+          if (rect.width >= 8 && rect.height >= 8 && rect.left <= 760) {
+            candidates.push({
+              x: rect.left + Math.min(rect.width, 180) / 2,
+              y: rect.top + rect.height / 2,
+              w: Math.round(rect.width),
+              h: Math.round(rect.height),
+              label: "menuitem-0",
+              score: 5,
+            });
+          }
+        }
       }
 
       candidates.sort((a, b) => b.score - a.score);
@@ -782,9 +909,6 @@ const postOnce = async (caption, imageInputs) => {
 
     const page = await browser.newPage();
     await page.setViewport({ width: 1400, height: 1080, deviceScaleFactor: 1 });
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
-    );
 
     await page.goto("https://www.instagram.com/?hl=en", {
       waitUntil: "domcontentloaded",
@@ -796,7 +920,9 @@ const postOnce = async (caption, imageInputs) => {
       console.log("Instagram viewport DPR:", dpr);
     } catch {}
 
+    await dismissPopups(page);
     await ensureLoggedIn(page);
+    await dismissPopups(page);
 
     const media = Array.isArray(imageInputs)
       ? imageInputs.slice(0, 10)
@@ -830,7 +956,10 @@ const postOnce = async (caption, imageInputs) => {
       throw new Error("Failed to prepare any Instagram media");
     }
 
-    const plusAt = await clickPlusIcon(page);
+    let createAt = await clickPlusIcon(page);
+    if (!createAt) {
+      createAt = await clickCreateMenu(page);
+    }
     if (/\/reels\/?(\?|$)/i.test(page.url())) {
       console.log("Opened Reels feed by mistake — going Home");
       await page.goto("https://www.instagram.com/?hl=en", {
@@ -838,25 +967,20 @@ const postOnce = async (caption, imageInputs) => {
         timeout: 60000,
       });
       await delay(3000);
-      await clickPlusIcon(page);
+      await dismissPopups(page);
+      createAt = (await clickPlusIcon(page)) || (await clickCreateMenu(page));
     }
 
-    // Plus may already open the composer or the Create flyout
-    let createAt = plusAt;
-    let mode = (await safeHas(page, "input[type='file']")) ? "post" : null;
+    let mode = (await composerReady(page)) ? "post" : null;
     if (!mode) {
-      mode = await pickComposerMode(page, videoPost, plusAt);
-    }
-    if (!mode) {
-      createAt = await clickCreateMenu(page);
-      await delay(1200);
       mode = await pickComposerMode(page, videoPost, createAt);
     }
     if (!mode) {
-      const plusRetry = await clickPlusIcon(page);
-      createAt = await clickCreateMenu(page);
+      createAt = (await clickLeftNav(page, ["create", "new post"], "Create")) || createAt;
       await delay(1200);
-      mode = await pickComposerMode(page, videoPost, createAt || plusRetry);
+      mode = (await composerReady(page))
+        ? "post"
+        : await pickComposerMode(page, videoPost, createAt);
     }
     await delay(1500);
 
@@ -867,16 +991,17 @@ const postOnce = async (caption, imageInputs) => {
       await delay(4000);
     }
 
-    try {
-      await page.waitForSelector("input[type='file']", { timeout: 15000 });
-    } catch {
-      console.log("No file input yet — clicking Post/Reel again");
-      await pickComposerMode(page, videoPost, createAt);
-      await page.waitForSelector("input[type='file']", { timeout: 25000 });
-    }
-    const fileInput = await page.$("input[type='file']");
     const uploadFiles = videoPost ? imagePaths.slice(0, 1) : imagePaths;
-    await fileInput.uploadFile(...uploadFiles);
+    const uploaded = await uploadToComposer(page, uploadFiles);
+    if (!uploaded) {
+      console.log("No file input yet — clicking Post again");
+      await pickComposerMode(page, videoPost, createAt);
+      const retryOk = await uploadToComposer(page, uploadFiles);
+      if (!retryOk) {
+        await saveDebugShot(page, "no_file_input");
+        throw new Error("Instagram file picker did not open after Create → Post");
+      }
+    }
     await page.keyboard.up("Shift");
     console.log(videoPost ? "✅ Video uploaded" : "✅ Images uploaded");
 

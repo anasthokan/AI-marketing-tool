@@ -115,9 +115,6 @@ const browser = await puppeteer.launch({
 assertEdgeProcess(browser);
 
 const page = await browser.newPage();
-await page.setUserAgent(
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
-);
 
 // Don't crash the script when Instagram navigates during login
 page.setDefaultNavigationTimeout(120000);

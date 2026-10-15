@@ -93,11 +93,24 @@ export const startScheduler = () => {
           scheduled < currentTime &&
           post.lastPostedDate !== todayDate &&
           post.lastPostOk !== true;
-        if (!dueNow && !missedUnpublished) continue;
+        const failedAgo = post.lastPostAttemptAt
+          ? Date.now() - new Date(post.lastPostAttemptAt).getTime()
+          : Number.POSITIVE_INFINITY;
+        const retryFailed =
+          post.lastPostedDate === todayDate &&
+          post.lastPostOk === false &&
+          failedAgo >= 45 * 60 * 1000;
+        if (!dueNow && !missedUnpublished && !retryFailed) continue;
 
-        if (post.lastPostedDate === todayDate && post.lastPostOk === false) {
-          console.log("Video post failed earlier today — waiting until tomorrow:", post._id);
+        if (
+          post.lastPostedDate === todayDate &&
+          post.lastPostOk === false &&
+          !retryFailed
+        ) {
           continue;
+        }
+        if (retryFailed) {
+          console.log("Retrying failed post after 45 min:", post._id);
         }
 
         if (post.confirmed === false) {
@@ -139,6 +152,7 @@ export const startScheduler = () => {
         }
 
         post.lastPostedDate = todayDate;
+        post.lastPostAttemptAt = new Date();
         post.scheduledTime = scheduled;
         await post.save();
 
