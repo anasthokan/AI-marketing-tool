@@ -345,7 +345,11 @@ const pasteCaption = async (page, caption) => {
 
 const shrinkComposerMedia = async (page) => {
   await page.evaluate(() => {
-    const dialog = document.querySelector("[role='dialog']");
+    const dialogs = Array.from(document.querySelectorAll("[role='dialog']"));
+    const dialog =
+      dialogs.find((d) =>
+        d.querySelector("[role='textbox'], [contenteditable='true']")
+      ) || dialogs[0];
     if (!dialog) return 0;
     let n = 0;
     const boxes = [...dialog.querySelectorAll("div")].filter((el) => {
@@ -377,7 +381,11 @@ const humanClick = async (page, x, y, label) => {
 
 const inspectComposerAction = async (page) => {
   return retryDetached(() => page.evaluate(() => {
-    const dialog = document.querySelector("[role='dialog']");
+    const dialogs = Array.from(document.querySelectorAll("[role='dialog']"));
+    const dialog =
+      dialogs.find((d) =>
+        d.querySelector("[role='textbox'], [contenteditable='true']")
+      ) || dialogs[0];
     if (!dialog) return { status: "no-dialog" };
 
     const text = (dialog.innerText || "").toLowerCase();
@@ -449,13 +457,21 @@ const inspectComposerAction = async (page) => {
     const nodes = [
       ...dialog.querySelectorAll("[role='button'], button, [aria-label]"),
     ];
+    const dialogRect = dialog.getBoundingClientRect();
+    const footerY = dialogRect.top + dialogRect.height * 0.55;
+
     for (const el of nodes) {
+      const raw = (el.innerText || "").trim().toLowerCase();
+      // Tab bar "Post / Reel / Story" is a wide row — never the blue Publish button
+      if (/\breel\b/.test(raw) || /\bstory\b/.test(raw)) continue;
+
       const kind = classify(firstLine(el));
       if (!kind) continue;
       const clickable = el.closest("[role='button'], button") || el;
       const rect = clickable.getBoundingClientRect();
       const style = window.getComputedStyle(clickable);
       if (rect.width < 8 || rect.height < 8) continue;
+      if (kind === "post" && (rect.width > 220 || rect.height > 64)) continue;
       if (kind === "next" && (rect.width < 48 || rect.height < 24)) continue;
       if (style.visibility === "hidden" || style.display === "none") continue;
       if (Number(style.opacity) === 0) continue;
@@ -464,8 +480,9 @@ const inspectComposerAction = async (page) => {
         disabled: isDisabled(clickable),
         x: rect.left + rect.width / 2,
         y: rect.top + rect.height / 2,
-        w: rect.width,
-        h: rect.height,
+        w: Math.round(rect.width),
+        h: Math.round(rect.height),
+        footer: rect.top >= footerY,
         label: firstLine(el),
       });
     }
@@ -474,16 +491,17 @@ const inspectComposerAction = async (page) => {
       return { status: busy ? "busy" : "missing", busy };
     }
 
-    const dialogRect = dialog.getBoundingClientRect();
-    const footerY = dialogRect.top + dialogRect.height * 0.4;
+    // Blue Publish is a compact button in the bottom-right — not the wide Post tab
     hits.sort((a, b) => {
-      const aFoot = a.y >= footerY ? 1 : 0;
-      const bFoot = b.y >= footerY ? 1 : 0;
-      return bFoot - aFoot || b.y - a.y || b.w - a.w;
+      if (a.kind === "post" && b.kind === "post") {
+        return (
+          Number(b.footer) - Number(a.footer) || b.y - a.y || b.x - a.x || a.w - b.w
+        );
+      }
+      return b.y - a.y || b.w - a.w;
     });
     const post = hits.find((h) => h.kind === "post");
     const next = hits.find((h) => h.kind === "next" && !h.disabled);
-    // If Post is still greyed out (video processing / editor step), take Next.
     if (post && !post.disabled) {
       return { status: "ready", ...post, busy };
     }
@@ -500,7 +518,11 @@ const inspectComposerAction = async (page) => {
 const scrollComposerToPost = async (page) => {
   await shrinkComposerMedia(page);
   await page.evaluate(() => {
-    const dialog = document.querySelector("[role='dialog']");
+    const dialogs = Array.from(document.querySelectorAll("[role='dialog']"));
+    const dialog =
+      dialogs.find((d) =>
+        d.querySelector("[role='textbox'], [contenteditable='true']")
+      ) || dialogs[0];
     if (!dialog) return;
     const all = [dialog, ...dialog.querySelectorAll("*")];
     for (const el of all) {
@@ -514,8 +536,12 @@ const scrollComposerToPost = async (page) => {
       }
     }
     const labels = ["post", "share", "next", "continue", "done"];
-    const btn = [...dialog.querySelectorAll("[role='button'], button, [aria-label]")]
+    const btns = [...dialog.querySelectorAll("[role='button'], button, [aria-label]")]
       .filter((el) => {
+        const raw = (el.innerText || "").toLowerCase();
+        if (/\breel\b/.test(raw) || /\bstory\b/.test(raw)) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width > 220 || r.height > 64) return false;
         const t = (
           el.getAttribute("aria-label") ||
           el.innerText ||
@@ -526,7 +552,12 @@ const scrollComposerToPost = async (page) => {
           .split("\n")[0];
         return labels.includes(t) || t.startsWith("post as ");
       })
-      .pop();
+      .sort((a, b) => {
+        const ar = a.getBoundingClientRect();
+        const br = b.getBoundingClientRect();
+        return br.top - ar.top || br.left - ar.left;
+      });
+    const btn = btns[0];
     if (!btn) return;
     let p = btn.parentElement;
     while (p) {
@@ -538,7 +569,12 @@ const scrollComposerToPost = async (page) => {
 };
 
 const composerClosed = async (page) =>
-  page.evaluate(() => !document.querySelector("[role='dialog']"));
+  page.evaluate(() => {
+    const dialogs = Array.from(document.querySelectorAll("[role='dialog']"));
+    return !dialogs.some((d) =>
+      d.querySelector("[role='textbox'], [contenteditable='true']")
+    );
+  });
 
 /** Wait until Post/Share is enabled (video processing), clicking Next if needed. */
 const waitForEnabledPostButton = async (page, videoPost) => {
@@ -590,8 +626,13 @@ const clickFacebookPostButton = async (page) => {
       continue;
     }
     if (info.kind === "post" && info.status === "ready") {
-      await humanClick(page, info.x, info.y, "Post");
-      await delay(1500);
+      await humanClick(
+        page,
+        info.x,
+        info.y,
+        `Publish (${Math.round(info.w)}x${Math.round(info.h)})`
+      );
+      await delay(2500);
       if (await composerClosed(page)) return true;
       continue;
     }
