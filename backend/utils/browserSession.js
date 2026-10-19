@@ -97,3 +97,41 @@ export const closeBrowserHard = async (browser, sessionDir) => {
   killBrowsersUsingProfile(sessionDir);
   await delay(1500);
 };
+
+/** Installed Chrome for Facebook — bundled Chromium gets blocked on RDP. */
+export const resolveChromeLaunch = () => {
+  const fromEnv = process.env.FB_BROWSER_PATH?.trim();
+  const candidates = [
+    fromEnv,
+    process.env.ProgramFiles &&
+      path.join(
+        process.env.ProgramFiles,
+        "Google",
+        "Chrome",
+        "Application",
+        "chrome.exe"
+      ),
+    process.env["ProgramFiles(x86)"] &&
+      path.join(
+        process.env["ProgramFiles(x86)"],
+        "Google",
+        "Chrome",
+        "Application",
+        "chrome.exe"
+      ),
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return {
+        label: "Google Chrome",
+        executablePath: candidate,
+        options: { executablePath: candidate },
+      };
+    }
+  }
+
+  return { label: "bundled Chromium", options: {} };
+};

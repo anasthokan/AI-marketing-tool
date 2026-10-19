@@ -21,6 +21,7 @@ $files = @(
   @{ Rel = "scheduler/postScheduler.js"; Url = "$base/scheduler/postScheduler.js" },
   @{ Rel = "models/Post.js"; Url = "$base/models/Post.js" },
   @{ Rel = "scripts/instagramLogin.js"; Url = "$base/scripts/instagramLogin.js" },
+  @{ Rel = "scripts/facebookLogin.js"; Url = "$base/scripts/facebookLogin.js" },
   @{ Rel = "server.js"; Url = "$base/server.js" }
 )
 

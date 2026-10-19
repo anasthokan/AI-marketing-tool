@@ -10,6 +10,7 @@ import {
   useSinglePage,
   closeExtraPages,
   closeBrowserHard,
+  resolveChromeLaunch,
 } from "../utils/browserSession.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -101,8 +102,11 @@ const locateCreatePost = async (page) => {
         "[aria-label='Create post']",
         "[aria-label='Create a new post']",
         "[aria-label='Create new post']",
+        "[aria-placeholder*='on your mind']",
+        "[aria-label*='on your mind']",
         "div[role='button'][aria-label*='Create a post']",
         "div[role='button'][aria-label*='Create Post']",
+        "div[role='textbox'][aria-placeholder*='on your mind']",
       ];
       for (const sel of sels) {
         const el = document.querySelector(sel);
@@ -128,7 +132,8 @@ const locateCreatePost = async (page) => {
         if (
           t.startsWith("what's on your mind") ||
           t.startsWith("whats on your mind") ||
-          t.includes("on your mind")
+          t.includes("on your mind") ||
+          t.includes("what's on your mind")
         ) {
           const clickable = n.closest("[role='button'], button") || n;
           const r = clickable.getBoundingClientRect();
@@ -154,6 +159,64 @@ const findCreatePost = async (page, timeoutMs = 25000) => {
     await delay(1000);
   }
   return null;
+};
+
+const applyStealth = async (page) => {
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+  });
+};
+
+const clickCreateFlyoutPost = async (page) => {
+  const found = await page.evaluate(() => {
+    const nodes = Array.from(
+      document.querySelectorAll(
+        "[role='menuitem'], [role='menu'] [role='button'], [role='dialog'] [role='button'], span, div"
+      )
+    );
+    for (const n of nodes) {
+      const t = (n.innerText || n.getAttribute("aria-label") || "")
+        .trim()
+        .toLowerCase()
+        .split("\n")[0];
+      if (t !== "post" && t !== "create post") continue;
+      const clickable =
+        n.closest("[role='menuitem'], [role='button'], button") || n;
+      const r = clickable.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8 || r.height > 90) continue;
+      return {
+        x: r.left + Math.min(r.width, 200) / 2,
+        y: r.top + r.height / 2,
+      };
+    }
+    return null;
+  }).catch(() => null);
+
+  if (!found) return false;
+  await humanClick(page, found.x, found.y, "Create menu Post");
+  await delay(1200);
+  return true;
+};
+
+const composerHasTextbox = async (page) =>
+  page.evaluate(() => {
+    const dialogs = Array.from(document.querySelectorAll("[role='dialog']"));
+    return dialogs.some((d) => {
+      const box = d.querySelector("[role='textbox'], [contenteditable='true']");
+      if (!box) return false;
+      const r = box.getBoundingClientRect();
+      return r.width > 20 && r.height > 10;
+    });
+  }).catch(() => false);
+
+const waitForComposer = async (page) => {
+  const deadline = Date.now() + 25000;
+  while (Date.now() < deadline) {
+    if (await composerHasTextbox(page)) return true;
+    await clickCreateFlyoutPost(page);
+    await delay(600);
+  }
+  return false;
 };
 
 const isLoginPage = async (page) => {
@@ -411,8 +474,13 @@ const inspectComposerAction = async (page) => {
       return { status: busy ? "busy" : "missing", busy };
     }
 
-    // Footer Post/Next is the bottom-most, then widest control.
-    hits.sort((a, b) => b.y - a.y || b.w - a.w);
+    const dialogRect = dialog.getBoundingClientRect();
+    const footerY = dialogRect.top + dialogRect.height * 0.4;
+    hits.sort((a, b) => {
+      const aFoot = a.y >= footerY ? 1 : 0;
+      const bFoot = b.y >= footerY ? 1 : 0;
+      return bFoot - aFoot || b.y - a.y || b.w - a.w;
+    });
     const post = hits.find((h) => h.kind === "post");
     const next = hits.find((h) => h.kind === "next" && !h.disabled);
     // If Post is still greyed out (video processing / editor step), take Next.
@@ -536,7 +604,6 @@ const clickFacebookPostButton = async (page) => {
 const submitFacebookPost = async (page, videoPost = false) => {
   const waited = await waitForEnabledPostButton(page, videoPost);
   if (!waited.ok) {
-    if (waited.reason === "no-dialog") return true;
     console.log("Facebook Post wait failed:", waited.reason);
     return false;
   }
@@ -558,14 +625,23 @@ const postOnce = async (caption, imageInputs) => {
   try {
     prepareBrowserProfile(SESSION_DIR);
 
+    const chrome = resolveChromeLaunch();
+    console.log(
+      `Facebook browser: ${chrome.label}${
+        chrome.executablePath ? ` @ ${chrome.executablePath}` : ""
+      }`
+    );
+
     browser = await puppeteer.launch({
       headless: !isHeaded(),
       defaultViewport: VIEWPORT,
       args: CHROME_ARGS,
       userDataDir: SESSION_DIR,
+      ...chrome.options,
     });
 
     const page = await useSinglePage(browser);
+    await applyStealth(page);
     await page.setViewport(VIEWPORT);
     await maximizeWindow(page);
 
@@ -575,7 +651,7 @@ const postOnce = async (caption, imageInputs) => {
         timeout: 60000,
       })
     );
-    await delay(1200);
+    await delay(4000);
     await closeExtraPages(browser, page);
     await dismissPopups(page);
 
@@ -594,10 +670,19 @@ const postOnce = async (caption, imageInputs) => {
     }
 
     await humanClick(page, createAt.x, createAt.y, "Create post");
+    await delay(1500);
+    const composerOk = await waitForComposer(page);
+    if (!composerOk) {
+      const shot = path.resolve(`fb_debug_composer_${Date.now()}.png`);
+      try {
+        await page.screenshot({ path: shot, fullPage: true });
+        console.log("Debug screenshot:", shot);
+      } catch {}
+      throw new Error(
+        "Facebook composer did not open after Create. On RDP run: npm run fb:login"
+      );
+    }
     console.log("Post box opened");
-    await retryDetached(() =>
-      page.waitForSelector("[role='dialog']", { timeout: 20000 })
-    );
     await delay(400);
 
     const videoPost =

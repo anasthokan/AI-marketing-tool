@@ -26,6 +26,7 @@ $files = @(
   "scheduler\postScheduler.js",
   "models\Post.js",
   "scripts\instagramLogin.js",
+  "scripts\facebookLogin.js",
   "server.js"
 )
 

@@ -6,10 +6,15 @@
  *   node scripts/facebookLogin.js
  */
 import puppeteer from "puppeteer";
-import fs from "fs";
 import path from "path";
 import readline from "readline";
 import { fileURLToPath } from "url";
+import {
+  prepareBrowserProfile,
+  useSinglePage,
+  closeBrowserHard,
+  resolveChromeLaunch,
+} from "../utils/browserSession.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SESSION_DIR = path.resolve(__dirname, "..", "facebook-session");
@@ -50,6 +55,8 @@ const isLoggedIn = async (page) => {
     const markers = [
       "[aria-label='Create a post']",
       "[aria-label='Create Post']",
+      "[aria-label='Create post']",
+      "[aria-placeholder*='on your mind']",
       "[aria-label='Your profile']",
       "[aria-label='Account']",
       "[aria-label='Facebook']",
@@ -63,24 +70,31 @@ const isLoggedIn = async (page) => {
   }
 };
 
-const lock = path.join(SESSION_DIR, "SingletonLock");
-if (fs.existsSync(lock)) {
-  try {
-    fs.unlinkSync(lock);
-  } catch {}
-}
+prepareBrowserProfile(SESSION_DIR);
 
+const chrome = resolveChromeLaunch();
 console.log("Session folder:", SESSION_DIR);
-console.log("Opening Chrome — login to Facebook, then come back here...");
+console.log(
+  `Opening ${chrome.label}${chrome.executablePath ? ` @ ${chrome.executablePath}` : ""} — login to Facebook, then come back here...`
+);
 
 const browser = await puppeteer.launch({
   headless: false,
   defaultViewport: null,
-  args: ["--start-maximized", "--no-sandbox", "--disable-setuid-sandbox"],
+  args: [
+    "--start-maximized",
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-restore-session-state",
+  ],
   userDataDir: SESSION_DIR,
+  ...chrome.options,
 });
 
-const page = await browser.newPage();
+const page = await useSinglePage(browser);
+await page.evaluateOnNewDocument(() => {
+  Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+});
 await page.goto("https://www.facebook.com/", {
   waitUntil: "domcontentloaded",
   timeout: 120000,
@@ -111,6 +125,6 @@ if (ok) {
   await waitEnter("");
 }
 
-await browser.close();
+await closeBrowserHard(browser, SESSION_DIR);
 console.log("Done. Keep PUPPETEER_HEADLESS=true for normal posting.");
 process.exit(ok ? 0 : 1);
