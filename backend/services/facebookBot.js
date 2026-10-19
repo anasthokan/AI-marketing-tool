@@ -40,6 +40,7 @@ const CHROME_ARGS = [
   "--hide-crash-restore-bubble",
   "--disable-infobars",
   "--noerrdialogs",
+  "--disable-blink-features=AutomationControlled",
 ];
 
 const isDetachedErr = (err) =>
@@ -351,22 +352,31 @@ const shrinkComposerMedia = async (page) => {
         d.querySelector("[role='textbox'], [contenteditable='true']")
       ) || dialogs[0];
     if (!dialog) return 0;
-    let n = 0;
-    const boxes = [...dialog.querySelectorAll("div")].filter((el) => {
+    const shell = dialog.getBoundingClientRect();
+    for (const el of dialog.querySelectorAll("video, img, canvas")) {
+      el.style.setProperty("max-height", "140px", "important");
+      el.style.setProperty("height", "140px", "important");
+      el.style.objectFit = "contain";
+    }
+    for (const el of dialog.querySelectorAll("div")) {
       const r = el.getBoundingClientRect();
-      return r.height > 240 && r.width > 180 && r.width < 720;
-    });
-    for (const el of boxes) {
-      el.style.maxHeight = "220px";
-      el.style.height = "220px";
+      if (r.height < 200 || r.width < 100) continue;
+      if (r.height >= shell.height - 8) continue;
+      el.style.setProperty("max-height", "150px", "important");
       el.style.overflow = "hidden";
-      n += 1;
     }
-    for (const vid of dialog.querySelectorAll("video, img")) {
-      vid.style.maxHeight = "220px";
-      vid.style.objectFit = "contain";
+    const all = [dialog, ...dialog.querySelectorAll("*")];
+    for (const el of all) {
+      const st = window.getComputedStyle(el);
+      const oy = st.overflowY;
+      if (
+        (oy === "auto" || oy === "scroll" || oy === "overlay") &&
+        el.scrollHeight > el.clientHeight + 20
+      ) {
+        el.scrollTop = el.scrollHeight;
+      }
     }
-    return n;
+    return 1;
   });
 };
 
@@ -511,6 +521,7 @@ const inspectComposerAction = async (page) => {
         w: Math.round(w),
         h: Math.round(h),
         footer: y >= footerY,
+        header: y <= dialogRect.top + 90,
         compact,
         label: firstLine(el),
       });
@@ -532,13 +543,15 @@ const inspectComposerAction = async (page) => {
       y: dialogRect.bottom - 28,
     };
 
-    hits.sort((a, b) => {
+      hits.sort((a, b) => {
       if (a.kind === "post" && b.kind === "post") {
+        const aBand = a.footer || a.header ? 1 : 0;
+        const bBand = b.footer || b.header ? 1 : 0;
         return (
           Number(b.compact) - Number(a.compact) ||
-          Number(b.footer) - Number(a.footer) ||
-          b.y - a.y ||
-          b.x - a.x
+          bBand - aBand ||
+          b.x - a.x ||
+          b.y - a.y
         );
       }
       return b.y - a.y;
@@ -734,6 +747,7 @@ const postOnce = async (caption, imageInputs) => {
       headless: !isHeaded(),
       defaultViewport: VIEWPORT,
       args: CHROME_ARGS,
+      ignoreDefaultArgs: ["--enable-automation"],
       userDataDir: SESSION_DIR,
       ...chrome.options,
     });
@@ -889,7 +903,10 @@ const postOnce = async (caption, imageInputs) => {
         ...(videoPost ? imagePaths.slice(0, 1) : imagePaths)
       );
       console.log(videoPost ? "Video uploaded" : "Images uploaded");
-      await shrinkComposerMedia(page);
+      for (let s = 0; s < 6; s++) {
+        await shrinkComposerMedia(page);
+        await delay(500);
+      }
 
       if (!(await retryDetached(() => captionLooksSet(page, caption)))) {
         console.log("Caption lost after media — re-entering");
