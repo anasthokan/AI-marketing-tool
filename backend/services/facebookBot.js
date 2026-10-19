@@ -455,63 +455,115 @@ const inspectComposerAction = async (page) => {
 
     const hits = [];
     const nodes = [
-      ...dialog.querySelectorAll("[role='button'], button, [aria-label]"),
+      ...dialog.querySelectorAll("[role='button'], button, [aria-label], span"),
     ];
     const dialogRect = dialog.getBoundingClientRect();
     const footerY = dialogRect.top + dialogRect.height * 0.55;
 
     for (const el of nodes) {
       const raw = (el.innerText || "").trim().toLowerCase();
-      // Tab bar "Post / Reel / Story" is a wide row — never the blue Publish button
-      if (/\breel\b/.test(raw) || /\bstory\b/.test(raw)) continue;
+      const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+      // Tab bar container lists Post + Reel + Story
+      if (lines.length >= 2 && lines.some((l) => l === "reel" || l === "story")) {
+        continue;
+      }
 
       const kind = classify(firstLine(el));
       if (!kind) continue;
       const clickable = el.closest("[role='button'], button") || el;
-      const rect = clickable.getBoundingClientRect();
+      const own = el.getBoundingClientRect();
+      const wrap = clickable.getBoundingClientRect();
       const style = window.getComputedStyle(clickable);
-      if (rect.width < 8 || rect.height < 8) continue;
-      if (kind === "post" && (rect.width > 220 || rect.height > 64)) continue;
-      if (kind === "next" && (rect.width < 48 || rect.height < 24)) continue;
+      if (wrap.width < 8 || wrap.height < 8) continue;
+      if (kind === "next" && (wrap.width < 48 || wrap.height < 24)) continue;
       if (style.visibility === "hidden" || style.display === "none") continue;
       if (Number(style.opacity) === 0) continue;
+
+      const compact =
+        own.width >= 20 && own.width <= 180 && own.height >= 16 && own.height <= 56;
+      let x;
+      let y;
+      let w;
+      let h;
+      if (compact) {
+        x = own.left + own.width / 2;
+        y = own.top + own.height / 2;
+        w = own.width;
+        h = own.height;
+      } else if (kind === "post" && wrap.width > 180) {
+        // Wide footer/tab row: the blue Publish control sits on the right
+        x = wrap.right - 36;
+        y = wrap.top + wrap.height / 2;
+        w = wrap.width;
+        h = wrap.height;
+      } else {
+        x = wrap.left + wrap.width / 2;
+        y = wrap.top + wrap.height / 2;
+        w = wrap.width;
+        h = wrap.height;
+      }
+
       hits.push({
         kind,
         disabled: isDisabled(clickable),
-        x: rect.left + rect.width / 2,
-        y: rect.top + rect.height / 2,
-        w: Math.round(rect.width),
-        h: Math.round(rect.height),
-        footer: rect.top >= footerY,
+        x,
+        y,
+        w: Math.round(w),
+        h: Math.round(h),
+        footer: y >= footerY,
+        compact,
         label: firstLine(el),
       });
     }
 
     if (!hits.length) {
-      return { status: busy ? "busy" : "missing", busy };
+      return {
+        status: busy ? "busy" : "missing",
+        busy,
+        corner: {
+          x: dialogRect.right - 40,
+          y: dialogRect.bottom - 28,
+        },
+      };
     }
 
-    // Blue Publish is a compact button in the bottom-right — not the wide Post tab
+    const corner = {
+      x: dialogRect.right - 40,
+      y: dialogRect.bottom - 28,
+    };
+
     hits.sort((a, b) => {
       if (a.kind === "post" && b.kind === "post") {
         return (
-          Number(b.footer) - Number(a.footer) || b.y - a.y || b.x - a.x || a.w - b.w
+          Number(b.compact) - Number(a.compact) ||
+          Number(b.footer) - Number(a.footer) ||
+          b.y - a.y ||
+          b.x - a.x
         );
       }
-      return b.y - a.y || b.w - a.w;
+      return b.y - a.y;
     });
     const post = hits.find((h) => h.kind === "post");
     const next = hits.find((h) => h.kind === "next" && !h.disabled);
+    const debug = hits.slice(0, 8).map((h) => ({
+      kind: h.kind,
+      label: h.label,
+      w: h.w,
+      h: h.h,
+      y: Math.round(h.y),
+      compact: h.compact,
+      footer: h.footer,
+    }));
     if (post && !post.disabled) {
-      return { status: "ready", ...post, busy };
+      return { status: "ready", ...post, busy, debug, corner };
     }
     if (next) {
-      return { status: "ready", ...next, busy };
+      return { status: "ready", ...next, busy, debug, corner };
     }
     if (post) {
-      return { status: "disabled", ...post, busy };
+      return { status: "disabled", ...post, busy, debug, corner };
     }
-    return { status: busy ? "busy" : "missing", busy };
+    return { status: busy ? "busy" : "missing", busy, debug, corner };
   }));
 };
 
@@ -619,6 +671,7 @@ const clickFacebookPostButton = async (page) => {
     await scrollComposerToPost(page);
     const info = await inspectComposerAction(page);
     console.log("Facebook Post button:", info);
+    if (info.debug) console.log("Facebook post candidates:", info.debug);
     if (info.status === "no-dialog") return true;
     if (info.kind === "next" && info.status === "ready") {
       await humanClick(page, info.x, info.y, "Next");
@@ -634,7 +687,11 @@ const clickFacebookPostButton = async (page) => {
       );
       await delay(2500);
       if (await composerClosed(page)) return true;
-      continue;
+    }
+    if (info.corner) {
+      await humanClick(page, info.corner.x, info.corner.y, "Publish (corner)");
+      await delay(2500);
+      if (await composerClosed(page)) return true;
     }
     await delay(800);
   }
