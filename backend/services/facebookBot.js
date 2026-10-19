@@ -392,10 +392,21 @@ const humanClick = async (page, x, y, label) => {
 const inspectComposerAction = async (page) => {
   return retryDetached(() => page.evaluate(() => {
     const dialogs = Array.from(document.querySelectorAll("[role='dialog']"));
-    const dialog =
-      dialogs.find((d) =>
-        d.querySelector("[role='textbox'], [contenteditable='true']")
-      ) || dialogs[0];
+    const scored = dialogs
+      .map((d) => {
+        const r = d.getBoundingClientRect();
+        const t = (d.innerText || "").toLowerCase();
+        let score = r.width * r.height;
+        if (t.includes("create post")) score += 10000000;
+        if (d.querySelector("video, [role='textbox'], [contenteditable='true']")) {
+          score += 1000000;
+        }
+        if (r.width < 220 || r.height < 140) score = 0;
+        return { d, score };
+      })
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+    const dialog = scored[0]?.d || dialogs[0];
     if (!dialog) return { status: "no-dialog" };
 
     const text = (dialog.innerText || "").toLowerCase();
@@ -428,22 +439,26 @@ const inspectComposerAction = async (page) => {
       return false;
     };
 
-    const firstLine = (el) =>
-      (
-        el.getAttribute("aria-label") ||
-        el.innerText ||
-        ""
-      )
-        .trim()
-        .toLowerCase()
-        .split("\n")[0]
-        .trim();
+    const firstLine = (el) => {
+      const text = (el.innerText || "").trim().toLowerCase().split("\n")[0].trim();
+      const al = (el.getAttribute("aria-label") || "").trim().toLowerCase();
+      if (
+        ["post", "share", "next", "publish", "post now", "share now"].includes(text)
+      ) {
+        return text;
+      }
+      return al || text;
+    };
 
     const classify = (label) => {
       if (!label) return null;
+      if (label.includes("create post") || label === "edit" || label === "close") {
+        return null;
+      }
       if (
         label === "post" ||
         label === "post now" ||
+        label === "publish" ||
         label === "share" ||
         label === "share now" ||
         label.startsWith("post as ") ||
@@ -528,12 +543,18 @@ const inspectComposerAction = async (page) => {
     }
 
     if (!hits.length) {
+      const labels = [...dialog.querySelectorAll("[role='button'], button")]
+        .slice(0, 25)
+        .map((el) => firstLine(el))
+        .filter(Boolean);
       return {
         status: busy ? "busy" : "missing",
         busy,
+        labels,
+        snippet: (dialog.innerText || "").slice(0, 180).replace(/\s+/g, " "),
         corner: {
-          x: dialogRect.right - 40,
-          y: dialogRect.bottom - 28,
+          x: dialogRect.right - 48,
+          y: dialogRect.bottom - 32,
         },
       };
     }
@@ -671,6 +692,14 @@ const waitForEnabledPostButton = async (page, videoPost) => {
       return { ok: true, info };
     }
 
+    if (info.status === "missing" && info.corner) {
+      await humanClick(page, info.corner.x, info.corner.y, "Publish (corner)");
+      await delay(2000);
+      if (await composerClosed(page)) {
+        return { ok: true, info: { kind: "post", status: "ready" } };
+      }
+    }
+
     await delay(1200);
   }
 
@@ -715,8 +744,12 @@ const clickFacebookPostButton = async (page) => {
 const submitFacebookPost = async (page, videoPost = false) => {
   const waited = await waitForEnabledPostButton(page, videoPost);
   if (!waited.ok) {
-    console.log("Facebook Post wait failed:", waited.reason);
-    return false;
+    console.log(
+      "Facebook Post wait failed:",
+      waited.reason,
+      "— clicking anyway"
+    );
+    return clickFacebookPostButton(page);
   }
 
   await page.keyboard.down("Control");
