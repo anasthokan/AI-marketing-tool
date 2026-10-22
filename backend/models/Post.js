@@ -16,9 +16,11 @@ const postSchema = new mongoose.Schema({
   confirmed: { type: Boolean, default: true },
   scheduledTime: String, // "10:30"
   postsPerDay: { type: Number, default: 1 },
+  active: { type: Boolean, default: true },
   lastPostedDate: { type: String, default: null },
   posted: { type: Boolean, default: false },
   lastPostOk: Boolean,
+  lastPlatformOk: { type: mongoose.Schema.Types.Mixed, default: undefined },
   lastPostError: String,
   lastPostAttemptAt: Date,
   createdAt: { type: Date, default: Date.now },

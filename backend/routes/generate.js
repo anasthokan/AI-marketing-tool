@@ -17,6 +17,17 @@ import { getUploadsRoot } from "../utils/paths.js";
 
 const router = express.Router();
 
+/** Only the newest save should publish. Older rows were posting again every day. */
+const retireOlderSchedules = async (keepId) => {
+  const retired = await Post.updateMany(
+    { _id: { $ne: keepId }, active: { $ne: false } },
+    { $set: { active: false } }
+  );
+  if (retired.modifiedCount) {
+    console.log(`Retired ${retired.modifiedCount} older schedule(s)`);
+  }
+};
+
 /** Persist manual uploads to disk — post exactly these files, no AI generation */
 const saveManualUploadsToDisk = (images) => {
   const dir = path.resolve("uploads", "manual");
@@ -130,7 +141,7 @@ router.post("/generate", async (req, res) => {
     let saveError = null;
     try {
       if (mongoose.connection.readyState === 1) {
-        await Post.create({
+        const created = await Post.create({
           company: form.company,
           website: form.website,
           inquiryUrl: form.inquiryUrl || form.website,
@@ -143,8 +154,10 @@ router.post("/generate", async (req, res) => {
           images: result.images || [],
           source: isManual ? "manual" : "ai",
           scheduledTime,
-          postsPerDay,
+          postsPerDay: 1,
+          active: true,
         });
+        await retireOlderSchedules(created._id);
         saved = true;
       } else {
         saveError = "MongoDB not connected (is mongod running on 27017?)";
@@ -389,7 +402,7 @@ router.post("/confirm-video", async (req, res) => {
     let saveError = null;
     try {
       if (mongoose.connection.readyState === 1) {
-        await Post.create({
+        const created = await Post.create({
           company: form.company,
           website: form.website,
           inquiryUrl: form.inquiryUrl || form.website,
@@ -404,8 +417,10 @@ router.post("/confirm-video", async (req, res) => {
           source: "video",
           confirmed: true,
           scheduledTime,
-          postsPerDay,
+          postsPerDay: 1,
+          active: true,
         });
+        await retireOlderSchedules(created._id);
         saved = true;
       } else {
         saveError = "MongoDB not connected (is mongod running on 27017?)";

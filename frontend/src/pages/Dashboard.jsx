@@ -547,8 +547,6 @@ export default function Dashboard() {
           }
         >
           <option value={1}>1 Post / day</option>
-          <option value={2}>2 Posts / day</option>
-          <option value={3}>3 Posts / day</option>
         </select>
       </div>
 

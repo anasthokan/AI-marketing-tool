@@ -39,7 +39,6 @@ export const startScheduler = () => {
   console.log(`Scheduler using timezone: ${timeZone}`);
 
   let running = false;
-  let retriedLegacyVideo = false;
 
   cron.schedule("* * * * *", async () => {
     if (running) {
@@ -54,74 +53,53 @@ export const startScheduler = () => {
         return;
       }
 
-      if (!retriedLegacyVideo) {
-        retriedLegacyVideo = true;
-        const reset = await Post.updateMany(
-          {
-            source: "video",
-            $or: [{ lastPostOk: { $exists: false } }, { lastPostOk: false }],
-          },
-          {
-            $set: {
-              posted: false,
-              lastPostedDate: null,
-              lastPostError: "retry-video-upload",
-            },
-          }
-        );
-        if (reset.modifiedCount || reset.nModified) {
-          console.log(
-            `Reset ${reset.modifiedCount || reset.nModified} video post(s) that were marked posted without a real upload result`
-          );
-        }
-      }
-
       const { todayDate, currentTime } = getNowParts(timeZone);
       console.log(`Scheduler tick ${todayDate} ${currentTime} (${timeZone})`);
 
-      const posts = await Post.find({
+      // One daily publish: older saved schedules were all firing every day.
+      const post = await Post.findOne({
         scheduledTime: { $exists: true, $ne: null, $ne: "" },
-      });
+        confirmed: { $ne: false },
+        active: { $ne: false },
+      }).sort({ createdAt: -1 });
 
-      for (const post of posts) {
+      if (post) {
         const scheduled = normalizeTime(post.scheduledTime);
-        if (!scheduled) continue;
+        if (!scheduled) return;
 
-        const alreadyTriedToday =
-          post.lastPostedDate === todayDate && post.lastPostOk !== false;
-        if (alreadyTriedToday) {
+        const sameDay = post.lastPostedDate === todayDate;
+        const platformOk =
+          sameDay &&
+          post.lastPlatformOk &&
+          typeof post.lastPlatformOk === "object"
+            ? { ...post.lastPlatformOk }
+            : {};
+        const platforms = (
+          Array.isArray(post.platform) ? post.platform : []
+        ).filter((name) => name === "Instagram" || name === "Facebook");
+        const allDone =
+          platforms.length > 0 &&
+          platforms.every((name) => platformOk[name] === true);
+
+        if (sameDay && (post.lastPostOk === true || allDone)) {
           console.log("Already posted today:", post._id);
-          continue;
+          return;
         }
 
         const dueNow = scheduled === currentTime;
-        const missedUnpublished =
-          scheduled < currentTime &&
-          post.lastPostedDate !== todayDate &&
-          post.lastPostOk !== true;
+        const missedToday = scheduled < currentTime && !sameDay;
         const failedAgo = post.lastPostAttemptAt
           ? Date.now() - new Date(post.lastPostAttemptAt).getTime()
           : Number.POSITIVE_INFINITY;
         const retryFailed =
-          post.lastPostedDate === todayDate &&
+          sameDay &&
+          !allDone &&
           post.lastPostOk === false &&
           failedAgo >= 45 * 60 * 1000;
-        if (!dueNow && !missedUnpublished && !retryFailed) continue;
+        if (!dueNow && !missedToday && !retryFailed) return;
 
-        if (
-          post.lastPostedDate === todayDate &&
-          post.lastPostOk === false &&
-          !retryFailed
-        ) {
-          continue;
-        }
         if (retryFailed) {
-          console.log("Retrying failed post after 45 min:", post._id);
-        }
-
-        if (post.confirmed === false) {
-          console.log("Post not confirmed by user — skipping:", post._id);
-          continue;
+          console.log("Retrying platforms that failed today:", post._id, platformOk);
         }
 
         const isManual = post.source === "manual";
@@ -138,12 +116,12 @@ export const startScheduler = () => {
             "Manual post has no uploaded images — skipping:",
             post._id
           );
-          continue;
+          return;
         }
 
         if (isVideo && !hasVideos) {
           console.log("Video post has no file — skipping:", post._id);
-          continue;
+          return;
         }
 
         if (isVideo) {
@@ -153,13 +131,18 @@ export const startScheduler = () => {
             post.lastPostOk = false;
             post.lastPostError = `Video file not found: ${missing[0]}`;
             await post.save();
-            continue;
+            return;
           }
         }
 
         post.lastPostedDate = todayDate;
         post.lastPostAttemptAt = new Date();
+        post.lastPostOk = false;
         post.scheduledTime = scheduled;
+        if (!sameDay) {
+          post.lastPlatformOk = {};
+          post.markModified("lastPlatformOk");
+        }
         await post.save();
 
         console.log("DAILY POST TRIGGERED", {
@@ -167,10 +150,9 @@ export const startScheduler = () => {
           scheduled,
           source: post.source || "ai",
           platforms: post.platform,
-          postsPerDay: post.postsPerDay,
           imageCount: hasImages ? post.images.length : 0,
           videoCount: videos.length,
-          catchUp: Boolean(missedUnpublished && !dueNow),
+          catchUp: Boolean(missedToday && !dueNow),
         });
 
         const media = hasVideos
@@ -183,31 +165,45 @@ export const startScheduler = () => {
           ? post.posts[0]
           : post.posts || "No caption";
 
-        const totalPosts = Math.min(Math.max(Number(post.postsPerDay) || 1, 1), 3);
-        const platforms = Array.isArray(post.platform) ? post.platform : [];
-
         const platformResults = {};
         let anyOk = false;
+        const remember = async (name, result) => {
+          platformResults[name] = result;
+          if (!result?.success) return;
+          anyOk = true;
+          platformOk[name] = true;
+          post.lastPlatformOk = { ...platformOk };
+          post.markModified("lastPlatformOk");
+          await post.save();
+        };
 
-        for (let i = 0; i < totalPosts; i++) {
-          console.log(`Posting ${i + 1}/${totalPosts}`);
+        console.log("Publishing once today", {
+          id: post._id,
+          platforms,
+          alreadyOk: platformOk,
+        });
 
-          if (platforms.includes("Instagram")) {
+        if (platforms.includes("Instagram")) {
+          if (platformOk.Instagram) {
+            console.log("Instagram already posted today — skipping");
+            platformResults.Instagram = { success: true };
+            anyOk = true;
+          } else {
             const ig = await postToInstagramBot(caption, media);
             console.log("Instagram:", ig);
-            platformResults.Instagram = ig;
-            if (ig?.success) anyOk = true;
+            await remember("Instagram", ig);
           }
+        }
 
-          if (platforms.includes("Facebook")) {
+        if (platforms.includes("Facebook")) {
+          if (platformOk.Facebook) {
+            console.log("Facebook already posted today — skipping");
+            platformResults.Facebook = { success: true };
+            anyOk = true;
+          } else {
             const fb = await postToFacebookBot(caption, media);
             console.log("Facebook:", fb);
-            platformResults.Facebook = fb;
-            if (fb?.success) anyOk = true;
-          }
-
-          if (i < totalPosts - 1) {
-            await new Promise((res) => setTimeout(res, 15000));
+            await remember("Facebook", fb);
           }
         }
 

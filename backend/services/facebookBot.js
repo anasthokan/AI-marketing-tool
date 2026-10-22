@@ -291,6 +291,42 @@ const maximizeWindow = async (page) => {
   }
 };
 
+const composerHasMedia = async (page) =>
+  page.evaluate(() => {
+    const dialogs = Array.from(document.querySelectorAll("[role='dialog']"));
+    for (const dialog of dialogs) {
+      for (const el of dialog.querySelectorAll("img, video, canvas")) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 80 && r.height > 80) return true;
+      }
+    }
+    return false;
+  }).catch(() => false);
+
+const waitForMediaPreview = async (page, videoPost) => {
+  const deadline = Date.now() + (videoPost ? 180000 : 45000);
+  while (Date.now() < deadline) {
+    if (await composerHasMedia(page)) return true;
+    await delay(1000);
+  }
+  return false;
+};
+
+/** Photo/video editor steps. Never clicks Post — that would publish a text-only update. */
+const advanceUntilCaption = async (page) => {
+  for (let i = 0; i < 4; i++) {
+    if (await composerHasTextbox(page)) return true;
+    const info = await inspectComposerAction(page);
+    if (info.kind === "next" && info.status === "ready") {
+      await humanClick(page, info.x, info.y, "Next");
+      await delay(1200);
+      continue;
+    }
+    await delay(800);
+  }
+  return composerHasTextbox(page);
+};
+
 const captionLooksSet = async (page, caption) => {
   const start = String(caption || "").trim().slice(0, 40);
   return page.evaluate((prefix) => {
@@ -308,6 +344,7 @@ const captionLooksSet = async (page, caption) => {
 };
 
 const pasteCaption = async (page, caption) => {
+  const text = String(caption || "");
   const box = await page.waitForSelector(
     "[role='dialog'] [role='textbox'], [role='dialog'] [contenteditable='true']",
     { timeout: 12000 }
@@ -315,12 +352,13 @@ const pasteCaption = async (page, caption) => {
   await box.click({ delay: 40 });
   await delay(150);
   try {
-    await page.keyboard.insertText(caption);
+    await page.keyboard.insertText(text);
   } catch {
-    await page.keyboard.type(caption, { delay: 0 });
+    // keyboard.type sends Enter for newlines and Facebook would publish early
+    await page.keyboard.type(text.replace(/\n/g, " "), { delay: 0 });
   }
 
-  if (!(await captionLooksSet(page, caption))) {
+  if (!(await captionLooksSet(page, text))) {
     console.log("insertText did not stick — retrying caption");
     await box.click({ delay: 40 });
     await delay(120);
@@ -328,9 +366,9 @@ const pasteCaption = async (page, caption) => {
     await page.keyboard.press("KeyA");
     await page.keyboard.up("Control");
     try {
-      await page.keyboard.insertText(caption);
+      await page.keyboard.insertText(text);
     } catch {
-      await page.keyboard.type(caption, { delay: 0 });
+      await page.keyboard.type(text.replace(/\n/g, " "), { delay: 0 });
     }
   }
 
@@ -692,14 +730,6 @@ const waitForEnabledPostButton = async (page, videoPost) => {
       return { ok: true, info };
     }
 
-    if (info.status === "missing" && info.corner) {
-      await humanClick(page, info.corner.x, info.corner.y, "Publish (corner)");
-      await delay(2000);
-      if (await composerClosed(page)) {
-        return { ok: true, info: { kind: "post", status: "ready" } };
-      }
-    }
-
     await delay(1200);
   }
 
@@ -708,7 +738,8 @@ const waitForEnabledPostButton = async (page, videoPost) => {
 
 /** Real mouse click — Facebook ignores synthetic dispatchEvent clicks. */
 const clickFacebookPostButton = async (page) => {
-  for (let i = 0; i < 8; i++) {
+  let publishClicks = 0;
+  for (let i = 0; i < 6; i++) {
     if (await composerClosed(page)) return true;
     await scrollComposerToPost(page);
     const info = await inspectComposerAction(page);
@@ -721,19 +752,27 @@ const clickFacebookPostButton = async (page) => {
       continue;
     }
     if (info.kind === "post" && info.status === "ready") {
+      if (publishClicks >= 1) {
+        console.log("Facebook Post already clicked once — not publishing again");
+        return (await composerClosed(page)) || !(await composerHasMedia(page));
+      }
+      publishClicks += 1;
       await humanClick(
         page,
         info.x,
         info.y,
         `Publish (${Math.round(info.w)}x${Math.round(info.h)})`
       );
-      await delay(2500);
-      if (await composerClosed(page)) return true;
-    }
-    if (info.corner) {
-      await humanClick(page, info.corner.x, info.corner.y, "Publish (corner)");
-      await delay(2500);
-      if (await composerClosed(page)) return true;
+      const settleUntil = Date.now() + 20000;
+      while (Date.now() < settleUntil) {
+        if (await composerClosed(page)) return true;
+        if (!(await composerHasMedia(page))) {
+          console.log("Facebook preview left the composer — treating as published");
+          return true;
+        }
+        await delay(1000);
+      }
+      return (await composerClosed(page)) || !(await composerHasMedia(page));
     }
     await delay(800);
   }
@@ -752,13 +791,6 @@ const submitFacebookPost = async (page, videoPost = false) => {
     return clickFacebookPostButton(page);
   }
 
-  await page.keyboard.down("Control");
-  await page.keyboard.press("Enter");
-  await page.keyboard.up("Control");
-  console.log("Sent Ctrl+Enter (Facebook publish shortcut)");
-  await delay(800);
-
-  if (await composerClosed(page)) return true;
   return clickFacebookPostButton(page);
 };
 
@@ -832,12 +864,9 @@ const postOnce = async (caption, imageInputs) => {
 
     const videoPost =
       Array.isArray(imageInputs) && imageInputs.some(isVideoMedia);
+    const expectsMedia = Array.isArray(imageInputs) && imageInputs.length > 0;
 
-    // Caption first — textbox is ready immediately; after video Facebook
-    // often remounts the composer and typing there is slow/unreliable.
-    await retryDetached(() => pasteCaption(page, caption));
-
-    if (imageInputs && imageInputs.length > 0) {
+    if (expectsMedia) {
 
       for (let i = 0; i < imageInputs.length; i++) {
         if (isVideoMedia(imageInputs[i])) {
@@ -936,15 +965,26 @@ const postOnce = async (caption, imageInputs) => {
         ...(videoPost ? imagePaths.slice(0, 1) : imagePaths)
       );
       console.log(videoPost ? "Video uploaded" : "Images uploaded");
-      for (let s = 0; s < 6; s++) {
+      const previewOk = await waitForMediaPreview(page, videoPost);
+      if (!previewOk) {
+        throw new Error(
+          "Facebook media preview did not appear — caption was not posted on its own"
+        );
+      }
+      for (let s = 0; s < 4; s++) {
         await shrinkComposerMedia(page);
-        await delay(500);
+        await delay(400);
       }
+    }
 
-      if (!(await retryDetached(() => captionLooksSet(page, caption)))) {
-        console.log("Caption lost after media — re-entering");
-        await retryDetached(() => pasteCaption(page, caption));
-      }
+    // Caption only after media is in the composer. Typing it first makes
+    // Facebook publish the text as its own post, then the photo/video as another.
+    await advanceUntilCaption(page);
+    await retryDetached(() => pasteCaption(page, caption));
+    if (expectsMedia && !(await composerHasMedia(page))) {
+      throw new Error(
+        "Facebook media left the composer before publish — caption was not posted alone"
+      );
     }
 
     const posted = await submitFacebookPost(page, videoPost);
