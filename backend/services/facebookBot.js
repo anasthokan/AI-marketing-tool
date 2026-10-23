@@ -352,28 +352,61 @@ const captionLooksSet = async (page, caption) => {
   }, start);
 };
 
+const focusCaptionBox = async (page) => {
+  const box = await page.evaluateHandle(() => {
+    const dialogs = Array.from(document.querySelectorAll("[role='dialog']"));
+    const dialog =
+      dialogs.find((d) =>
+        d.querySelector("[role='textbox'], [contenteditable='true']")
+      ) || dialogs[0];
+    if (!dialog) return null;
+    const boxes = Array.from(
+      dialog.querySelectorAll("[role='textbox'], [contenteditable='true']")
+    );
+    const score = (el) => {
+      const r = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      if (style.visibility === "hidden" || style.display === "none") return 0;
+      if (r.width < 80 || r.height < 12) return 0;
+      const label = (el.getAttribute("aria-label") || "").toLowerCase();
+      let value = r.width * r.height;
+      if (
+        label.includes("mind") ||
+        label.includes("say something") ||
+        label.includes("write something") ||
+        label.includes("caption") ||
+        label.includes("photo")
+      ) {
+        value += 1000000000;
+      }
+      return value;
+    };
+    boxes.sort((a, b) => score(b) - score(a));
+    return boxes[0] || null;
+  });
+  const el = box.asElement();
+  if (!el) throw new Error("Facebook caption box not found");
+  await el.click({ delay: 40 });
+  await delay(150);
+  return el;
+};
+
 const pasteCaption = async (page, caption) => {
   const text = String(caption || "");
-  const box = await page.waitForSelector(
-    "[role='dialog'] [role='textbox'], [role='dialog'] [contenteditable='true']",
-    { timeout: 12000 }
-  );
-  await box.click({ delay: 40 });
-  await delay(150);
-  try {
-    await page.keyboard.insertText(text);
-  } catch {
-    // keyboard.type sends Enter for newlines and Facebook would publish early
-    await page.keyboard.type(text.replace(/\n/g, " "), { delay: 0 });
-  }
+  const box = await focusCaptionBox(page);
+  // Facebook's editor ignores plain DOM writes. execCommand updates the text it actually publishes.
+  const wrote = await page.evaluate((value) => {
+    const el = document.activeElement;
+    if (!el) return false;
+    el.focus();
+    document.execCommand("selectAll", false, null);
+    return document.execCommand("insertText", false, value);
+  }, text);
 
-  if (!(await captionLooksSet(page, text))) {
-    console.log("insertText did not stick — retrying caption");
+  if (!wrote || !(await captionLooksSet(page, text))) {
+    console.log("execCommand did not stick — retrying caption");
     await box.click({ delay: 40 });
     await delay(120);
-    await page.keyboard.down("Control");
-    await page.keyboard.press("KeyA");
-    await page.keyboard.up("Control");
     try {
       await page.keyboard.insertText(text);
     } catch {
@@ -653,8 +686,8 @@ const inspectComposerAction = async (page) => {
   }));
 };
 
-const scrollComposerToPost = async (page) => {
-  await shrinkComposerMedia(page);
+const scrollComposerToPost = async (page, shrink = false) => {
+  if (shrink) await shrinkComposerMedia(page);
   await page.evaluate(() => {
     const dialogs = Array.from(document.querySelectorAll("[role='dialog']"));
     const dialog =
@@ -721,7 +754,7 @@ const waitForEnabledPostButton = async (page, videoPost) => {
   let lastStatus = "";
 
   while (Date.now() < deadline) {
-    await scrollComposerToPost(page);
+    await scrollComposerToPost(page, videoPost);
     const info = await inspectComposerAction(page);
     const status = `${info.status}:${info.kind || ""}:${info.label || ""}`;
     if (status !== lastStatus) {
@@ -756,11 +789,11 @@ const waitForEnabledPostButton = async (page, videoPost) => {
 };
 
 /** Real mouse click — Facebook ignores synthetic dispatchEvent clicks. */
-const clickFacebookPostButton = async (page) => {
+const clickFacebookPostButton = async (page, videoPost = false) => {
   let publishClicks = 0;
   for (let i = 0; i < 6; i++) {
     if (await composerClosed(page)) return true;
-    await scrollComposerToPost(page);
+    await scrollComposerToPost(page, videoPost);
     const info = await inspectComposerAction(page);
     console.log("Facebook Post button:", info);
     if (info.debug) console.log("Facebook post candidates:", info.debug);
@@ -813,10 +846,10 @@ const submitFacebookPost = async (page, videoPost = false) => {
       waited.reason,
       "— clicking anyway"
     );
-    return clickFacebookPostButton(page);
+    return clickFacebookPostButton(page, videoPost);
   }
 
-  return clickFacebookPostButton(page);
+  return clickFacebookPostButton(page, videoPost);
 };
 
 const postOnce = async (caption, imageInputs) => {
@@ -998,12 +1031,12 @@ const postOnce = async (caption, imageInputs) => {
       }
     }
 
-    // Media first, then move past the video trim steps, then type the caption
-    // on the screen that actually publishes. Typing earlier is dropped when Next is clicked.
-    await advanceUntilCaption(page, videoPost);
+    // Video has a trim wizard, so step through Next before the caption.
+    // A photo composer already has its caption box — clicking Next there publishes the image with no text.
+    if (videoPost) await advanceUntilCaption(page, true);
     await retryDetached(() => pasteCaption(page, caption));
     if (!(await retryDetached(() => captionLooksSet(page, caption)))) {
-      console.log("Caption missing after wizard — entering it again");
+      console.log("Caption missing — entering it again");
       await retryDetached(() => pasteCaption(page, caption));
     }
     if (expectsMedia && !(await composerHasMedia(page))) {
@@ -1011,22 +1044,19 @@ const postOnce = async (caption, imageInputs) => {
         "Facebook media left the composer before publish — caption was not posted alone"
       );
     }
-    if (videoPost && !(await captionLooksSet(page, caption))) {
+    if (videoPost) {
+      for (let s = 0; s < 3; s++) {
+        await shrinkComposerMedia(page);
+        await delay(300);
+      }
+      if (!(await captionLooksSet(page, caption))) {
+        console.log("Caption lost while fitting the preview — entering it again");
+        await retryDetached(() => pasteCaption(page, caption));
+      }
+    }
+    if (expectsMedia && !(await captionLooksSet(page, caption))) {
       throw new Error(
-        "Facebook video caption did not stick — video was not published without it"
-      );
-    }
-    for (let s = 0; s < 3; s++) {
-      await shrinkComposerMedia(page);
-      await delay(300);
-    }
-    if (!(await captionLooksSet(page, caption))) {
-      console.log("Caption lost while fitting the preview — entering it again");
-      await retryDetached(() => pasteCaption(page, caption));
-    }
-    if (videoPost && !(await captionLooksSet(page, caption))) {
-      throw new Error(
-        "Facebook video caption did not stick — video was not published without it"
+        "Facebook caption did not stick — media was not published without it"
       );
     }
 
