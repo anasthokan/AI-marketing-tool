@@ -39,33 +39,66 @@ export const startScheduler = () => {
   console.log(`Scheduler using timezone: ${timeZone}`);
 
   let running = false;
+  let restoredSchedules = false;
 
   cron.schedule("* * * * *", async () => {
     if (running) {
-      console.log("Scheduler still busy — skipping this minute");
+      console.log("Scheduler still busy â€” skipping this minute");
       return;
     }
     running = true;
 
     try {
       if (mongoose.connection.readyState !== 1) {
-        console.log("Scheduler skipped — MongoDB not connected");
+        console.log("Scheduler skipped â€” MongoDB not connected");
         return;
       }
 
       const { todayDate, currentTime } = getNowParts(timeZone);
       console.log(`Scheduler tick ${todayDate} ${currentTime} (${timeZone})`);
 
-      // One daily publish: older saved schedules were all firing every day.
-      const post = await Post.findOne({
+      if (!restoredSchedules) {
+        restoredSchedules = true;
+        const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+        const recentDay = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
+          .toLocaleDateString("en-CA", { timeZone });
+        const restored = await Post.updateMany(
+          {
+            active: false,
+            confirmed: { $ne: false },
+            scheduledTime: { $exists: true, $nin: [null, ""] },
+            "images.0": { $exists: true },
+            $or: [
+              { createdAt: { $gte: since } },
+              { lastPostedDate: { $gte: recentDay } },
+            ],
+          },
+          { $set: { active: true } }
+        );
+        const restoredCount = restored.modifiedCount || restored.nModified || 0;
+        if (restoredCount) {
+          console.log(
+            `Restored ${restoredCount} image schedule(s) so they publish with the video`
+          );
+        }
+      }
+
+      const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+      const recentDay = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
+        .toLocaleDateString("en-CA", { timeZone });
+      const posts = await Post.find({
         scheduledTime: { $exists: true, $ne: null, $ne: "" },
         confirmed: { $ne: false },
         active: { $ne: false },
-      }).sort({ createdAt: -1 });
+        $or: [
+          { createdAt: { $gte: since } },
+          { lastPostedDate: { $gte: recentDay } },
+        ],
+      }).sort({ createdAt: 1 });
 
-      if (post) {
+      for (const post of posts) {
         const scheduled = normalizeTime(post.scheduledTime);
-        if (!scheduled) return;
+        if (!scheduled) continue;
 
         const sameDay = post.lastPostedDate === todayDate;
         const platformOk =
@@ -83,24 +116,15 @@ export const startScheduler = () => {
 
         if (sameDay && (post.lastPostOk === true || allDone)) {
           console.log("Already posted today:", post._id);
-          return;
+          continue;
         }
 
+        // One attempt per saved post per day. A same-day retry was publishing
+        // the Facebook video again after the first click had already gone out.
         const dueNow = scheduled === currentTime;
         const missedToday = scheduled < currentTime && !sameDay;
-        const failedAgo = post.lastPostAttemptAt
-          ? Date.now() - new Date(post.lastPostAttemptAt).getTime()
-          : Number.POSITIVE_INFINITY;
-        const retryFailed =
-          sameDay &&
-          !allDone &&
-          post.lastPostOk === false &&
-          failedAgo >= 45 * 60 * 1000;
-        if (!dueNow && !missedToday && !retryFailed) return;
-
-        if (retryFailed) {
-          console.log("Retrying platforms that failed today:", post._id, platformOk);
-        }
+        if (!dueNow && !missedToday) continue;
+        if (sameDay) continue;
 
         const isManual = post.source === "manual";
         const isVideo = post.source === "video";
@@ -113,25 +137,25 @@ export const startScheduler = () => {
 
         if (isManual && !hasImages) {
           console.log(
-            "Manual post has no uploaded images — skipping:",
+            "Manual post has no uploaded images â€” skipping:",
             post._id
           );
-          return;
+          continue;
         }
 
         if (isVideo && !hasVideos) {
-          console.log("Video post has no file — skipping:", post._id);
-          return;
+          console.log("Video post has no file â€” skipping:", post._id);
+          continue;
         }
 
         if (isVideo) {
           const missing = videos.filter((v) => !fs.existsSync(v));
           if (missing.length) {
-            console.log("Video file missing on disk — skipping:", post._id, missing);
+            console.log("Video file missing on disk â€” skipping:", post._id, missing);
             post.lastPostOk = false;
             post.lastPostError = `Video file not found: ${missing[0]}`;
             await post.save();
-            return;
+            continue;
           }
         }
 
@@ -139,10 +163,8 @@ export const startScheduler = () => {
         post.lastPostAttemptAt = new Date();
         post.lastPostOk = false;
         post.scheduledTime = scheduled;
-        if (!sameDay) {
-          post.lastPlatformOk = {};
-          post.markModified("lastPlatformOk");
-        }
+        post.lastPlatformOk = {};
+        post.markModified("lastPlatformOk");
         await post.save();
 
         console.log("DAILY POST TRIGGERED", {
@@ -180,31 +202,18 @@ export const startScheduler = () => {
         console.log("Publishing once today", {
           id: post._id,
           platforms,
-          alreadyOk: platformOk,
         });
 
         if (platforms.includes("Instagram")) {
-          if (platformOk.Instagram) {
-            console.log("Instagram already posted today — skipping");
-            platformResults.Instagram = { success: true };
-            anyOk = true;
-          } else {
-            const ig = await postToInstagramBot(caption, media);
-            console.log("Instagram:", ig);
-            await remember("Instagram", ig);
-          }
+          const ig = await postToInstagramBot(caption, media);
+          console.log("Instagram:", ig);
+          await remember("Instagram", ig);
         }
 
         if (platforms.includes("Facebook")) {
-          if (platformOk.Facebook) {
-            console.log("Facebook already posted today — skipping");
-            platformResults.Facebook = { success: true };
-            anyOk = true;
-          } else {
-            const fb = await postToFacebookBot(caption, media);
-            console.log("Facebook:", fb);
-            await remember("Facebook", fb);
-          }
+          const fb = await postToFacebookBot(caption, media);
+          console.log("Facebook:", fb);
+          await remember("Facebook", fb);
         }
 
         const failParts = Object.entries(platformResults)
@@ -219,6 +228,8 @@ export const startScheduler = () => {
         if (!anyOk) {
           console.log("Post did not publish on any platform:", post._id, post.lastPostError);
         }
+
+        await new Promise((res) => setTimeout(res, 8000));
       }
     } catch (err) {
       console.log("Scheduler Error:", err.message);

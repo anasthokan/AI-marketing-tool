@@ -312,17 +312,26 @@ const waitForMediaPreview = async (page, videoPost) => {
   return false;
 };
 
-/** Photo/video editor steps. Never clicks Post — that would publish a text-only update. */
-const advanceUntilCaption = async (page) => {
-  for (let i = 0; i < 4; i++) {
-    if (await composerHasTextbox(page)) return true;
+/**
+ * Facebook video opens on a trim screen that already has a text box.
+ * Click Next until that wizard step is gone, then the caption field is the one that publishes.
+ */
+const advanceUntilCaption = async (page, videoPost) => {
+  const deadline = Date.now() + (videoPost ? 180000 : 20000);
+  let clicks = 0;
+  const maxClicks = videoPost ? 5 : 2;
+  while (Date.now() < deadline && clicks < maxClicks) {
     const info = await inspectComposerAction(page);
+    console.log("Facebook pre-caption step:", info.status, info.kind, info.label);
+    if (info.status === "upload-error") break;
     if (info.kind === "next" && info.status === "ready") {
       await humanClick(page, info.x, info.y, "Next");
-      await delay(1200);
+      clicks += 1;
+      await delay(1500);
       continue;
     }
-    await delay(800);
+    if (info.kind === "post" && info.status === "ready" && !info.header) break;
+    await delay(1000);
   }
   return composerHasTextbox(page);
 };
@@ -615,8 +624,10 @@ const inspectComposerAction = async (page) => {
       }
       return b.y - a.y;
     });
-    const post = hits.find((h) => h.kind === "post");
     const next = hits.find((h) => h.kind === "next" && !h.disabled);
+    const publish = hits.find(
+      (h) => h.kind === "post" && !h.disabled && !h.header && (h.footer || h.compact)
+    );
     const debug = hits.slice(0, 8).map((h) => ({
       kind: h.kind,
       label: h.label,
@@ -625,15 +636,18 @@ const inspectComposerAction = async (page) => {
       y: Math.round(h.y),
       compact: h.compact,
       footer: h.footer,
+      header: h.header,
     }));
-    if (post && !post.disabled) {
-      return { status: "ready", ...post, busy, debug, corner };
-    }
+    // Video editor shows Next before the caption step. The top "Post" tab is not Publish.
     if (next) {
       return { status: "ready", ...next, busy, debug, corner };
     }
-    if (post) {
-      return { status: "disabled", ...post, busy, debug, corner };
+    if (publish) {
+      return { status: "ready", ...publish, busy, debug, corner };
+    }
+    const blocked = hits.find((h) => h.kind === "post" && !h.header);
+    if (blocked) {
+      return { status: "disabled", ...blocked, busy, debug, corner };
     }
     return { status: busy ? "busy" : "missing", busy, debug, corner };
   }));
@@ -721,8 +735,13 @@ const waitForEnabledPostButton = async (page, videoPost) => {
     }
 
     if (info.kind === "next" && info.status === "ready") {
-      await humanClick(page, info.x, info.y, "Next");
+      console.log("Facebook still on Next after caption — not publishing yet");
       await delay(1200);
+      continue;
+    }
+
+    if (info.kind === "post" && info.header) {
+      await delay(800);
       continue;
     }
 
@@ -747,14 +766,19 @@ const clickFacebookPostButton = async (page) => {
     if (info.debug) console.log("Facebook post candidates:", info.debug);
     if (info.status === "no-dialog") return true;
     if (info.kind === "next" && info.status === "ready") {
-      await humanClick(page, info.x, info.y, "Next");
-      await delay(1200);
+      console.log("Facebook Next is still showing — not clicking Post");
+      await delay(800);
+      continue;
+    }
+    if (info.kind === "post" && info.header) {
+      console.log("Ignoring Facebook Post tab");
+      await delay(800);
       continue;
     }
     if (info.kind === "post" && info.status === "ready") {
       if (publishClicks >= 1) {
         console.log("Facebook Post already clicked once — not publishing again");
-        return (await composerClosed(page)) || !(await composerHasMedia(page));
+        return true;
       }
       publishClicks += 1;
       await humanClick(
@@ -772,7 +796,8 @@ const clickFacebookPostButton = async (page) => {
         }
         await delay(1000);
       }
-      return (await composerClosed(page)) || !(await composerHasMedia(page));
+      console.log("Facebook publish click sent once");
+      return true;
     }
     await delay(800);
   }
@@ -971,19 +996,37 @@ const postOnce = async (caption, imageInputs) => {
           "Facebook media preview did not appear — caption was not posted on its own"
         );
       }
-      for (let s = 0; s < 4; s++) {
-        await shrinkComposerMedia(page);
-        await delay(400);
-      }
     }
 
-    // Caption only after media is in the composer. Typing it first makes
-    // Facebook publish the text as its own post, then the photo/video as another.
-    await advanceUntilCaption(page);
+    // Media first, then move past the video trim steps, then type the caption
+    // on the screen that actually publishes. Typing earlier is dropped when Next is clicked.
+    await advanceUntilCaption(page, videoPost);
     await retryDetached(() => pasteCaption(page, caption));
+    if (!(await retryDetached(() => captionLooksSet(page, caption)))) {
+      console.log("Caption missing after wizard — entering it again");
+      await retryDetached(() => pasteCaption(page, caption));
+    }
     if (expectsMedia && !(await composerHasMedia(page))) {
       throw new Error(
         "Facebook media left the composer before publish — caption was not posted alone"
+      );
+    }
+    if (videoPost && !(await captionLooksSet(page, caption))) {
+      throw new Error(
+        "Facebook video caption did not stick — video was not published without it"
+      );
+    }
+    for (let s = 0; s < 3; s++) {
+      await shrinkComposerMedia(page);
+      await delay(300);
+    }
+    if (!(await captionLooksSet(page, caption))) {
+      console.log("Caption lost while fitting the preview — entering it again");
+      await retryDetached(() => pasteCaption(page, caption));
+    }
+    if (videoPost && !(await captionLooksSet(page, caption))) {
+      throw new Error(
+        "Facebook video caption did not stick — video was not published without it"
       );
     }
 
